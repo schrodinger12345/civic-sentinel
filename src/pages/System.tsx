@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Navigation } from "@/components/Navigation";
 import { ConsoleHeader } from "@/components/AgentConsole/ConsoleHeader";
@@ -7,8 +8,51 @@ import { ReasoningNode } from "@/components/AgentConsole/ReasoningNode";
 import { ConsoleTicker } from "@/components/AgentConsole/ConsoleTicker";
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
+import { api } from "@/lib/api";
+
+interface LiveStats {
+  activeCount: number;
+  slaWarningCount: number;
+  escalatedCount: number;
+  resolvedTodayCount: number;
+}
 
 const System = () => {
+  // Live stats from Firestore for hackathon demo
+  const [liveStats, setLiveStats] = useState<LiveStats>({
+    activeCount: 0,
+    slaWarningCount: 0,
+    escalatedCount: 0,
+    resolvedTodayCount: 0,
+  });
+  const [prevEscalated, setPrevEscalated] = useState(0);
+  const [flash, setFlash] = useState(false);
+
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        const data = await api.getLiveStats();
+        // Flash effect when escalation count increases
+        if (data.escalatedCount > prevEscalated && prevEscalated > 0) {
+          setFlash(true);
+          setTimeout(() => setFlash(false), 1000);
+        }
+        setPrevEscalated(data.escalatedCount);
+        setLiveStats({
+          activeCount: data.activeCount,
+          slaWarningCount: data.slaWarningCount,
+          escalatedCount: data.escalatedCount,
+          resolvedTodayCount: data.resolvedTodayCount,
+        });
+      } catch (err) {
+        console.warn('Failed to fetch live stats:', err);
+      }
+    };
+    fetchStats();
+    const interval = setInterval(fetchStats, 5000); // Poll every 5 seconds
+    return () => clearInterval(interval);
+  }, [prevEscalated]);
+
   return (
     <div className="min-h-screen bg-background system-grid relative overflow-hidden">
       {/* Ambient Glows */}
@@ -87,7 +131,7 @@ const System = () => {
             <ConsoleTicker />
           </motion.div>
 
-          {/* System Stats */}
+          {/* System Stats - REAL-TIME from Firestore */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -100,7 +144,7 @@ const System = () => {
                   Active Tickets
                 </div>
                 <div className="text-2xl font-bold text-foreground">
-                  1,247
+                  {liveStats.activeCount}
                 </div>
               </div>
               <div>
@@ -108,15 +152,16 @@ const System = () => {
                   SLA Warnings
                 </div>
                 <div className="text-2xl font-bold text-warning">
-                  34
+                  {liveStats.slaWarningCount}
                 </div>
               </div>
               <div>
                 <div className="text-xs font-mono uppercase text-muted-foreground mb-1">
-                  Escalated Today
+                  🚨 Escalated
                 </div>
-                <div className="text-2xl font-bold text-destructive">
-                  12
+                <div className={`text-2xl font-bold text-destructive transition-all ${flash ? 'scale-125 animate-pulse' : ''
+                  }`}>
+                  {liveStats.escalatedCount}
                 </div>
               </div>
               <div>
@@ -124,7 +169,7 @@ const System = () => {
                   Resolved Today
                 </div>
                 <div className="text-2xl font-bold text-success">
-                  89
+                  {liveStats.resolvedTodayCount}
                 </div>
               </div>
             </div>
@@ -176,26 +221,24 @@ const System = () => {
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-sm">{item.dept}</span>
                         <span
-                          className={`text-sm font-mono ${
-                            item.status === "good"
+                          className={`text-sm font-mono ${item.status === "good"
                               ? "text-success"
                               : item.status === "warning"
-                              ? "text-warning"
-                              : "text-destructive"
-                          }`}
+                                ? "text-warning"
+                                : "text-destructive"
+                            }`}
                         >
                           {item.score}%
                         </span>
                       </div>
                       <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
                         <div
-                          className={`h-full rounded-full ${
-                            item.status === "good"
+                          className={`h-full rounded-full ${item.status === "good"
                               ? "bg-success"
                               : item.status === "warning"
-                              ? "bg-warning"
-                              : "bg-destructive"
-                          }`}
+                                ? "bg-warning"
+                                : "bg-destructive"
+                            }`}
                           style={{ width: `${item.score}%` }}
                         />
                       </div>

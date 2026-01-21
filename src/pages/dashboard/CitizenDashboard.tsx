@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
@@ -14,31 +14,134 @@ import {
   Bell,
   Search,
 } from 'lucide-react';
+import { Complaint, TimelineEvent } from '@/types/complaint';
+import { api } from '@/lib/api';
+import { useToast } from '@/hooks/use-toast';
+import { ComplaintSubmissionModal } from '@/components/ComplaintSubmissionModal';
+import { AgentModeToggle, useAgentMode } from '@/components/AgentModeToggle';
+import { AgentDecisionPanel } from '@/components/AgentDecisionPanel';
+import { LiveAgentConsole } from '@/components/LiveAgentConsole';
 
 export default function CitizenDashboard() {
   const { userProfile, logout } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { toast } = useToast();
+
+  const [complaints, setComplaints] = useState<Complaint[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [nowTick, setNowTick] = useState(Date.now());
+  const [selected, setSelected] = useState<Complaint | null>(null);
+  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const agentMode = useAgentMode();
 
   // Handle report action from onboarding
   useEffect(() => {
     if (searchParams.get('action') === 'report') {
-      // Could open report modal here
+      setIsModalOpen(true);
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    const fetchComplaints = async () => {
+      if (!userProfile?.uid) return;
+      setLoading(true);
+      try {
+        const { complaints } = await api.getCitizenComplaints(userProfile.uid);
+        setComplaints(complaints);
+      } catch (error) {
+        toast({
+          title: 'Could not load complaints',
+          description: error instanceof Error ? error.message : 'Please try again.',
+          variant: 'destructive',
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchComplaints();
+  }, [userProfile?.uid, toast]);
+
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   const handleLogout = async () => {
     await logout();
     navigate('/', { replace: true });
   };
 
-  // Mock data for demonstration
-  const stats = [
-    { label: 'Total Complaints', value: 0, icon: FileText, color: 'primary' },
-    { label: 'Pending', value: 0, icon: Clock, color: 'warning' },
-    { label: 'Resolved', value: 0, icon: CheckCircle2, color: 'success' },
-    { label: 'Escalated', value: 0, icon: AlertCircle, color: 'destructive' },
-  ];
+  const filteredComplaints = useMemo(() => {
+    const term = search.toLowerCase();
+    if (!term) return complaints;
+    return complaints.filter((c) =>
+      [c.description, c.issueType, c.assignedDepartment]
+        .filter(Boolean)
+        .some((field) => field.toLowerCase().includes(term))
+    );
+  }, [complaints, search]);
+
+  const stats = useMemo(() => {
+    const total = complaints.length;
+    const resolved = complaints.filter((c) => c.status === 'resolved').length;
+    const escalated = complaints.filter((c) => c.escalationLevel > 0 || c.status === 'escalated').length;
+    const pending = total - resolved;
+    return [
+      { label: 'Total Complaints', value: total, icon: FileText, color: 'primary' },
+      { label: 'Pending', value: pending, icon: Clock, color: 'warning' },
+      { label: 'Resolved', value: resolved, icon: CheckCircle2, color: 'success' },
+      { label: 'Escalated', value: escalated, icon: AlertCircle, color: 'destructive' },
+    ];
+  }, [complaints]);
+
+  const handleSubmitSuccess = (complaint: Complaint) => {
+    setComplaints((prev) => [complaint, ...prev]);
+  };
+
+  const severityColor = (severity: string) => {
+    if (severity === 'critical') return 'text-destructive';
+    if (severity === 'high') return 'text-warning';
+    if (severity === 'medium') return 'text-primary';
+    return 'text-muted-foreground';
+  };
+
+  const statusLabel = (status: Complaint['status']) => status.replace('_', ' ');
+
+  const getDeadline = (c: Complaint) =>
+    new Date((c.slaDeadline as any) ?? (c.expectedResolutionTime as any));
+
+  const formatRemaining = (ms: number) => {
+    const sign = ms < 0 ? '-' : '';
+    const abs = Math.abs(ms);
+    const totalSec = Math.floor(abs / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return `${sign}${h}h ${m}m ${s}s`;
+  };
+
+  const openTimeline = async (c: Complaint) => {
+    setSelected(c);
+    setTimeline([]);
+    setTimelineLoading(true);
+    try {
+      const res = await api.getComplaintTimeline(c.id);
+      setTimeline(res.timeline);
+    } catch (error) {
+      toast({
+        title: 'Unable to load timeline',
+        description: error instanceof Error ? error.message : 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setTimelineLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -97,9 +200,12 @@ export default function CitizenDashboard() {
             <p className="text-muted-foreground mt-1">
               Track your complaints and report new issues.
             </p>
+            <div className="mt-3">
+              <AgentModeToggle />
+            </div>
           </div>
 
-          <Button className="bg-primary hover:bg-primary/90 h-11">
+          <Button className="bg-primary hover:bg-primary/90 h-11" onClick={() => setIsModalOpen(true)}>
             <Plus className="w-4 h-4 mr-2" />
             Report New Issue
           </Button>
@@ -124,6 +230,11 @@ export default function CitizenDashboard() {
           ))}
         </div>
 
+        {/* Live Agent Console - visible when Agent Mode is ON */}
+        {agentMode && (
+          <LiveAgentConsole className="mb-8" />
+        )}
+
         {/* Recent Complaints */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -138,27 +249,136 @@ export default function CitizenDashboard() {
               <input
                 type="text"
                 placeholder="Search..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
                 className="pl-9 pr-4 py-2 text-sm bg-white/5 border border-white/10 rounded-lg focus:outline-none focus:border-primary"
               />
             </div>
           </div>
 
-          {/* Empty state */}
-          <div className="py-16 text-center">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white/5 flex items-center justify-center">
-              <FileText className="w-8 h-8 text-muted-foreground" />
+          {loading ? (
+            <div className="py-12 text-center text-muted-foreground">Loading complaints...</div>
+          ) : filteredComplaints.length === 0 ? (
+            <div className="py-16 text-center">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white/5 flex items-center justify-center">
+                <FileText className="w-8 h-8 text-muted-foreground" />
+              </div>
+              <h3 className="text-lg font-medium mb-2">No complaints yet</h3>
+              <p className="text-sm text-muted-foreground mb-6 max-w-sm mx-auto">
+                Report your first civic issue and CivicFix AI will ensure it gets resolved.
+              </p>
+              <Button className="bg-primary hover:bg-primary/90" onClick={() => setIsModalOpen(true)}>
+                <Plus className="w-4 h-4 mr-2" />
+                Report an Issue
+              </Button>
             </div>
-            <h3 className="text-lg font-medium mb-2">No complaints yet</h3>
-            <p className="text-sm text-muted-foreground mb-6 max-w-sm mx-auto">
-              Report your first civic issue and CivicFix AI will ensure it gets resolved.
-            </p>
-            <Button className="bg-primary hover:bg-primary/90">
-              <Plus className="w-4 h-4 mr-2" />
-              Report an Issue
-            </Button>
-          </div>
+          ) : (
+            <div className="space-y-4">
+              {filteredComplaints.map((complaint) => (
+                <div
+                  key={complaint.id}
+                  className="glass-panel p-4 cursor-pointer hover:border-white/20 transition-colors"
+                  onClick={() => openTimeline(complaint)}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold capitalize">{complaint.issueType}</span>
+                        <span className={`text-xs font-medium uppercase ${severityColor(complaint.severity)}`}>
+                          {complaint.severity}
+                        </span>
+                        {complaint.escalationLevel > 0 && (
+                          <span className="text-xs font-medium text-destructive">
+                            Escalated L{complaint.escalationLevel}
+                          </span>
+                        )}
+                        {complaint.status === 'sla_warning' && (
+                          <span className="text-xs font-medium text-warning">SLA WARNING</span>
+                        )}
+                      </div>
+                      <p className="text-sm text-muted-foreground">
+                        {complaint.description}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                        <span>Dept: {complaint.assignedDepartment}</span>
+                        <span>Status: {statusLabel(complaint.status)}</span>
+                        <span>Priority: {complaint.priority}/10</span>
+                        <span>
+                          SLA remaining: {formatRemaining(getDeadline(complaint).getTime() - nowTick)}
+                        </span>
+                        <span className="text-primary font-semibold">AI: Gemini classified</span>
+                        <span className="text-warning">SLA watchdog enforces escalation</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </motion.div>
+
+        {/* Timeline Panel */}
+        {selected && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="glass-panel p-6 mt-6"
+          >
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div>
+                <h3 className="text-lg font-semibold">Timeline</h3>
+                <p className="text-xs text-muted-foreground">
+                  Complaint {selected.id} • Status: {statusLabel(selected.status)}
+                </p>
+              </div>
+              <Button variant="outline" onClick={() => setSelected(null)}>
+                Close
+              </Button>
+            </div>
+
+            {/* Agent Decision Panel - visible when Agent Mode is ON */}
+            {agentMode && (
+              <AgentDecisionPanel
+                decision={selected.agentDecision}
+                complaintDescription={selected.description}
+                className="mb-4"
+              />
+            )}
+
+            {timelineLoading ? (
+              <div className="py-8 text-center text-muted-foreground">Loading timeline...</div>
+            ) : timeline.length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground">No timeline events yet.</div>
+            ) : (
+              <div className="space-y-3">
+                {timeline.map((e, idx) => (
+                  <div key={idx} className="p-3 rounded-lg bg-white/5 border border-white/[0.06]">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-medium uppercase text-muted-foreground">{e.type}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(e.timestamp as any).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="text-sm mt-1">{e.message}</p>
+                    <p className="text-xs text-muted-foreground mt-1">Action: {e.action}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </motion.div>
+        )}
       </main>
+
+      {userProfile?.uid && (
+        <ComplaintSubmissionModal
+          isOpen={isModalOpen}
+          onClose={() => setIsModalOpen(false)}
+          citizenId={userProfile.uid}
+          citizenName={userProfile.displayName || 'Citizen'}
+          citizenLocation={userProfile.location || userProfile.city || 'Unknown'}
+          onSuccess={handleSubmitSuccess}
+        />
+      )}
     </div>
   );
 }

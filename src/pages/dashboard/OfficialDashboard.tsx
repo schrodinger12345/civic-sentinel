@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
@@ -14,29 +15,195 @@ import {
   TrendingUp,
   BarChart3,
 } from 'lucide-react';
+import { api } from '@/lib/api';
+import { Complaint, OfficialStats, TimelineEvent } from '@/types/complaint';
+import { useToast } from '@/hooks/use-toast';
+import { AgentModeToggle, useAgentMode } from '@/components/AgentModeToggle';
+import { AgentDecisionPanel } from '@/components/AgentDecisionPanel';
+import { LiveAgentConsole } from '@/components/LiveAgentConsole';
 
 export default function OfficialDashboard() {
   const { userProfile, logout } = useAuth();
   const navigate = useNavigate();
+  const { toast } = useToast();
+
+  const [complaints, setComplaints] = useState<Complaint[]>([]);
+  const [stats, setStats] = useState<OfficialStats | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [nowTick, setNowTick] = useState(Date.now());
+  const [selected, setSelected] = useState<Complaint | null>(null);
+  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [aiBrief, setAIBrief] = useState<string | null>(null);
+  const [liveEscalated, setLiveEscalated] = useState(0);
+  const [flash, setFlash] = useState(false);
+  const agentMode = useAgentMode();
 
   const handleLogout = async () => {
     await logout();
     navigate('/', { replace: true });
   };
 
-  // Mock data for demonstration
-  const stats = [
-    { label: 'Assigned Issues', value: 0, icon: FileText, color: 'primary' },
-    { label: 'Due Today', value: 0, icon: Clock, color: 'warning' },
-    { label: 'Resolved', value: 0, icon: CheckCircle2, color: 'success' },
-    { label: 'Escalated', value: 0, icon: AlertTriangle, color: 'destructive' },
-  ];
+  useEffect(() => {
+    const loadData = async () => {
+      if (!userProfile?.uid) return;
+      setLoading(true);
+      try {
+        const [{ complaints }, { stats }, aiBriefRes] = await Promise.all([
+          api.getOfficialComplaints(userProfile.department || userProfile.uid),
+          api.getOfficialStats(userProfile.uid),
+          api
+            .getOfficialAIBrief(userProfile.uid)
+            .catch(() => ({ success: false, brief: '' } as { success: boolean; brief: string })),
+        ]);
+        setComplaints(complaints);
+        setStats(stats);
+        if (aiBriefRes?.brief) {
+          setAIBrief(aiBriefRes.brief);
+        }
+      } catch (error) {
+        toast({
+          title: 'Unable to load data',
+          description: error instanceof Error ? error.message : 'Please try again.',
+          variant: 'destructive',
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  const performanceMetrics = [
-    { label: 'Avg. Resolution Time', value: '--', change: null },
-    { label: 'SLA Compliance', value: '--', change: null },
-    { label: 'Escalation Rate', value: '--', change: null },
-  ];
+    loadData();
+  }, [userProfile?.uid, toast]);
+
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Poll live escalation count for demo
+  useEffect(() => {
+    const fetchLive = async () => {
+      try {
+        const data = await api.getLiveStats();
+        if (data.escalatedCount > liveEscalated && liveEscalated > 0) {
+          setFlash(true);
+          setTimeout(() => setFlash(false), 1000);
+        }
+        setLiveEscalated(data.escalatedCount);
+      } catch { }
+    };
+    fetchLive();
+    const interval = setInterval(fetchLive, 5000);
+    return () => clearInterval(interval);
+  }, [liveEscalated]);
+
+  const filteredComplaints = useMemo(() => {
+    const term = search.toLowerCase();
+    if (!term) return complaints;
+    return complaints.filter((c) =>
+      [c.description, c.issueType, c.assignedDepartment]
+        .filter(Boolean)
+        .some((field) => field.toLowerCase().includes(term))
+    );
+  }, [complaints, search]);
+
+  const statCards = useMemo(() => {
+    const assigned = stats?.byStatus.assigned ?? 0;
+    const dueToday = complaints.filter((c) => c.status !== 'resolved').length;
+    const resolved = stats?.byStatus.resolved ?? 0;
+    const escalated = stats?.escalated ?? 0;
+    return [
+      { label: 'Assigned Issues', value: assigned, icon: FileText, color: 'primary' },
+      { label: 'Due Today', value: dueToday, icon: Clock, color: 'warning' },
+      { label: 'Resolved', value: resolved, icon: CheckCircle2, color: 'success' },
+      { label: 'Escalated', value: escalated, icon: AlertTriangle, color: 'destructive' },
+    ];
+  }, [stats, complaints]);
+
+  const performanceMetrics = useMemo(
+    () => [
+      { label: 'Avg. Resolution Time', value: stats ? `${stats.averageResolutionTime}h` : '--' },
+      { label: 'SLA Compliance', value: stats ? `${stats.slaCompliance}%` : '--' },
+      { label: 'Escalation Rate', value: stats ? `${stats.escalated} active` : '--' },
+    ],
+    [stats]
+  );
+
+  const severityColor = (severity: string) => {
+    if (severity === 'critical') return 'text-destructive';
+    if (severity === 'high') return 'text-warning';
+    if (severity === 'medium') return 'text-primary';
+    return 'text-muted-foreground';
+  };
+
+  const statusLabel = (status: Complaint['status']) => status.replace('_', ' ');
+
+  const getDeadline = (c: Complaint) =>
+    new Date((c.slaDeadline as any) ?? (c.expectedResolutionTime as any));
+
+  const formatRemaining = (ms: number) => {
+    const sign = ms < 0 ? '-' : '';
+    const abs = Math.abs(ms);
+    const totalSec = Math.floor(abs / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return `${sign}${h}h ${m}m ${s}s`;
+  };
+
+  const openTimeline = async (c: Complaint) => {
+    setSelected(c);
+    setTimeline([]);
+    setTimelineLoading(true);
+    try {
+      const res = await api.getComplaintTimeline(c.id);
+      setTimeline(res.timeline);
+    } catch (error) {
+      toast({
+        title: 'Unable to load timeline',
+        description: error instanceof Error ? error.message : 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setTimelineLoading(false);
+    }
+  };
+
+  const handleUpdateStatus = async (
+    complaintId: string,
+    status: 'acknowledged' | 'in_progress' | 'on_hold' | 'resolved',
+    notes?: string
+  ) => {
+    if (!userProfile?.uid) return;
+    setUpdatingId(complaintId);
+    try {
+      // Hackathon flow: only in_progress/resolved via v2 endpoint (timeline-backed).
+      // Keep legacy endpoint for other internal statuses used by existing UI.
+      const { complaint } =
+        status === 'in_progress' || status === 'resolved'
+          ? await api.updateComplaintStatusV2(complaintId, { status, note: notes })
+          : await api.updateComplaintStatus(complaintId, {
+            officialId: userProfile.uid,
+            status,
+            notes,
+          });
+      setComplaints((prev) => prev.map((c) => (c.id === complaint.id ? complaint : c)));
+      toast({
+        title: 'Status updated',
+        description: `Marked as ${statusLabel(status)}`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Update failed',
+        description: error instanceof Error ? error.message : 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setUpdatingId(null);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -49,6 +216,11 @@ export default function OfficialDashboard() {
               <span className="text-lg font-semibold">CivicFix AI</span>
               <span className="text-xs px-2 py-1 bg-warning/20 text-warning rounded-full font-medium">
                 OFFICIAL
+              </span>
+              {/* Live Escalation Count for Hackathon Demo */}
+              <span className={`text-xs px-2 py-1 bg-destructive/20 text-destructive rounded-full font-medium transition-all ${flash ? 'scale-125 animate-pulse' : ''
+                }`}>
+                🚨 Escalations: {liveEscalated}
               </span>
             </div>
 
@@ -100,6 +272,9 @@ export default function OfficialDashboard() {
             <p className="text-muted-foreground mt-1">
               {userProfile?.jurisdiction || 'Your Jurisdiction'} • {new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
             </p>
+            <div className="mt-3">
+              <AgentModeToggle />
+            </div>
           </div>
 
           <div className="flex gap-3">
@@ -112,7 +287,7 @@ export default function OfficialDashboard() {
 
         {/* Stats Grid */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-          {stats.map((stat, index) => (
+          {statCards.map((stat, index) => (
             <motion.div
               key={stat.label}
               initial={{ opacity: 0, y: 20 }}
@@ -129,6 +304,10 @@ export default function OfficialDashboard() {
           ))}
         </div>
 
+        {/* Live Agent Console - visible when Agent Mode is ON */}
+        {agentMode && (
+          <LiveAgentConsole className="mb-8" />
+        )}
         {/* Performance Metrics */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -149,6 +328,13 @@ export default function OfficialDashboard() {
               </div>
             ))}
           </div>
+
+          {aiBrief && (
+            <div className="mt-6 p-4 rounded-xl bg-white/5 border border-primary/20">
+              <p className="text-xs font-semibold text-primary mb-1">AI Briefing (Advisory)</p>
+              <p className="text-sm text-muted-foreground whitespace-pre-line">{aiBrief}</p>
+            </div>
+          )}
         </motion.div>
 
         {/* Assigned Issues */}
@@ -165,22 +351,129 @@ export default function OfficialDashboard() {
               <input
                 type="text"
                 placeholder="Search issues..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
                 className="pl-9 pr-4 py-2 text-sm bg-white/5 border border-white/10 rounded-lg focus:outline-none focus:border-primary"
               />
             </div>
           </div>
 
-          {/* Empty state */}
-          <div className="py-16 text-center">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white/5 flex items-center justify-center">
-              <FileText className="w-8 h-8 text-muted-foreground" />
+          {loading ? (
+            <div className="py-12 text-center text-muted-foreground">Loading assigned issues...</div>
+          ) : filteredComplaints.length === 0 ? (
+            <div className="py-16 text-center">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white/5 flex items-center justify-center">
+                <FileText className="w-8 h-8 text-muted-foreground" />
+              </div>
+              <h3 className="text-lg font-medium mb-2">No assigned issues</h3>
+              <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+                When citizens report issues in your jurisdiction, they will appear here for resolution.
+              </p>
             </div>
-            <h3 className="text-lg font-medium mb-2">No assigned issues</h3>
-            <p className="text-sm text-muted-foreground max-w-sm mx-auto">
-              When citizens report issues in your jurisdiction, they will appear here for resolution.
-            </p>
-          </div>
+          ) : (
+            <div className="space-y-4">
+              {filteredComplaints.map((complaint) => (
+                <div key={complaint.id} className="glass-panel p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold capitalize">{complaint.issueType}</span>
+                        <span className={`text-xs font-medium uppercase ${severityColor(complaint.severity)}`}>
+                          {complaint.severity}
+                        </span>
+                        {complaint.escalationLevel > 0 && (
+                          <span className="text-xs font-medium text-destructive">
+                            Escalated L{complaint.escalationLevel}
+                          </span>
+                        )}
+                        {complaint.status === 'sla_warning' && (
+                          <span className="text-xs font-medium text-warning">SLA WARNING</span>
+                        )}
+                      </div>
+                      <p className="text-sm text-muted-foreground">{complaint.description}</p>
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                        <span>Priority: {complaint.priority}/10</span>
+                        <span>Status: {statusLabel(complaint.status)}</span>
+                        <span>Dept: {complaint.assignedDepartment}</span>
+                        <span>
+                          SLA remaining: {formatRemaining(getDeadline(complaint).getTime() - nowTick)}
+                        </span>
+                        <Button size="sm" variant="ghost" onClick={() => openTimeline(complaint)}>
+                          View timeline
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {(['acknowledged', 'in_progress', 'on_hold', 'resolved'] as const).map((status) => (
+                      <Button
+                        key={status}
+                        size="sm"
+                        variant={complaint.status === status ? 'default' : 'outline'}
+                        disabled={updatingId === complaint.id}
+                        onClick={() => handleUpdateStatus(complaint.id, status)}
+                      >
+                        {statusLabel(status)}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </motion.div>
+
+        {/* Timeline Panel */}
+        {selected && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="glass-panel p-6 mt-6"
+          >
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div>
+                <h3 className="text-lg font-semibold">Timeline</h3>
+                <p className="text-xs text-muted-foreground">
+                  Complaint {selected.id} • Status: {statusLabel(selected.status)}
+                </p>
+              </div>
+              <Button variant="outline" onClick={() => setSelected(null)}>
+                Close
+              </Button>
+            </div>
+
+            {/* Agent Decision Panel - visible when Agent Mode is ON */}
+            {agentMode && (
+              <AgentDecisionPanel
+                decision={selected.agentDecision}
+                complaintDescription={selected.description}
+                className="mb-4"
+              />
+            )}
+
+            {timelineLoading ? (
+              <div className="py-8 text-center text-muted-foreground">Loading timeline...</div>
+            ) : timeline.length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground">No timeline events yet.</div>
+            ) : (
+              <div className="space-y-3">
+                {timeline.map((e, idx) => (
+                  <div key={idx} className="p-3 rounded-lg bg-white/5 border border-white/[0.06]">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-medium uppercase text-muted-foreground">{e.type}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(e.timestamp as any).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="text-sm mt-1">{e.message}</p>
+                    <p className="text-xs text-muted-foreground mt-1">Action: {e.action}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </motion.div>
+        )}
 
         {/* Accountability Notice */}
         <motion.div
