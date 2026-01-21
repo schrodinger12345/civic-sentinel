@@ -51,14 +51,21 @@ export const Navigation = () => {
 
         {/* Right Actions */}
         <div className="flex items-center gap-3">
-          <button className="btn-system-ghost text-sm hidden sm:block">
+          <Link 
+            to="/auth" 
+            className="btn-system-ghost text-sm hidden sm:block"
+          >
             Log In
-          </button>
-          <button className="btn-system-primary text-sm">
+          </Link>
+          <Link 
+            to="/auth" 
+            className="btn-system-primary text-sm"
+          >
             Sign Up
-          </button>
+          </Link>
         </div>
       </nav>
     </motion.header>
   );
 };
+
