@@ -39,21 +39,21 @@ export const StateFlowVisualization = () => {
   };
 
   return (
-    <div className="relative w-full overflow-hidden py-8">
-      {/* Flow Container */}
-      <div className="flex items-center justify-between gap-2 md:gap-4 overflow-x-auto px-4">
+    <div className="relative w-full py-4">
+      {/* Vertical Flow Container */}
+      <div className="flex flex-col items-center gap-0">
         {flowStates.map((state, index) => (
-          <div key={state.id} className="flex items-center">
+          <div key={state.id} className="flex flex-col items-center">
             {/* Node */}
             <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
               transition={{ delay: index * 0.1, duration: 0.5 }}
-              className={`${getNodeClass(state.status, index)} min-w-[100px] md:min-w-[130px] transition-all duration-500`}
+              className={`${getNodeClass(state.status, index)} w-full max-w-[200px] transition-all duration-500`}
             >
-              <div className="flex flex-col items-center gap-2">
+              <div className="flex items-center gap-3 px-4 py-3">
                 {/* Status Indicator */}
-                <div className={`status-dot ${
+                <div className={`status-dot shrink-0 ${
                   index === pulsePosition ? "status-dot-pulse" : ""
                 } ${
                   state.status === "warning" ? "status-dot-warning" :
@@ -73,22 +73,34 @@ export const StateFlowVisualization = () => {
               </div>
             </motion.div>
 
-            {/* Connector */}
+            {/* River Connector */}
             {index < flowStates.length - 1 && (
-              <div className="relative w-8 md:w-12 h-[2px] mx-1">
-                <div className="absolute inset-0 bg-gradient-to-r from-white/5 via-white/15 to-white/5" />
-                {/* Traveling pulse */}
+              <div className="relative w-[3px] h-10 overflow-hidden">
+                {/* Static river bed */}
+                <div className="absolute inset-0 bg-gradient-to-b from-white/10 via-white/5 to-white/10 rounded-full" />
+                
+                {/* Flowing water effect - multiple droplets */}
+                {[0, 1, 2].map((droplet) => (
+                  <motion.div
+                    key={droplet}
+                    className="absolute left-0 right-0 h-4 bg-gradient-to-b from-transparent via-primary to-transparent rounded-full"
+                    animate={{
+                      y: ["-100%", "300%"],
+                    }}
+                    transition={{
+                      duration: 1.5,
+                      repeat: Infinity,
+                      delay: droplet * 0.5,
+                      ease: "easeInOut",
+                    }}
+                  />
+                ))}
+                
+                {/* Glow effect */}
                 <motion.div
-                  className="absolute top-0 left-0 w-4 h-full bg-gradient-to-r from-transparent via-primary to-transparent"
-                  animate={{
-                    x: ["-100%", "200%"],
-                  }}
-                  transition={{
-                    duration: 2,
-                    repeat: Infinity,
-                    delay: index * 0.3,
-                    ease: "easeInOut",
-                  }}
+                  className="absolute inset-0 bg-primary/20 blur-sm rounded-full"
+                  animate={{ opacity: [0.3, 0.6, 0.3] }}
+                  transition={{ duration: 2, repeat: Infinity }}
                 />
               </div>
             )}
@@ -96,11 +108,11 @@ export const StateFlowVisualization = () => {
         ))}
       </div>
 
-      {/* Ambient glow under active state */}
+      {/* Ambient glow under flow */}
       <motion.div
-        className="absolute bottom-0 left-0 right-0 h-20 pointer-events-none"
+        className="absolute inset-0 pointer-events-none"
         style={{
-          background: "radial-gradient(ellipse at center bottom, hsl(173 77% 54% / 0.1), transparent 70%)",
+          background: "radial-gradient(ellipse at center, hsl(173 77% 54% / 0.05), transparent 70%)",
         }}
         animate={{ opacity: [0.5, 0.8, 0.5] }}
         transition={{ duration: 3, repeat: Infinity }}

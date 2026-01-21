@@ -18,7 +18,7 @@ const Index = () => {
       {/* Hero / System Overview Section */}
       <section className="pt-32 pb-16 px-6 relative">
         <div className="container mx-auto max-w-6xl">
-          <div className="grid lg:grid-cols-[1fr,1.5fr] gap-12 items-center">
+          <div className="grid lg:grid-cols-[1.2fr,1fr] gap-8 items-start">
             {/* Left - Headlines & Signals */}
             <motion.div
               initial={{ opacity: 0, y: 30 }}
@@ -70,7 +70,7 @@ const Index = () => {
               <StateFlowVisualization />
 
               <div className="mt-6 pt-4 border-t border-white/5 flex items-center justify-between text-xs text-muted-foreground">
-                <span>Complaints flow left → right through system stages</span>
+                <span>Complaints flow through system stages</span>
                 <span className="font-mono text-primary">12 active</span>
               </div>
             </motion.div>
