@@ -46,14 +46,14 @@ export interface Complaint {
   // Status tracking
   status: ComplaintStatus;
   assignedOfficialId?: string;
-  expectedResolutionTime: Date; // SLA deadline
+  department?: string; // Department for routing
+  assignedDepartment?: string; // Legacy field for compatibility
 
-  /**
-   * Hackathon-required (judge-facing) lifecycle fields.
-   * Kept alongside legacy fields for backward compatibility with existing UI.
-   */
-  slaHours?: number;
-  slaDeadline?: Date;
+  // 🔥 SINGLE SOURCE OF TRUTH for SLA timing (10 seconds for demo)
+  nextEscalationAt?: Date;
+
+  // Timeline for UI display
+  timeline?: TimelineEvent[];
 
   /**
    * Agent decision - verbatim Gemini output for proof of AI agency.
@@ -97,13 +97,12 @@ export interface AuditEntry {
 // Authenticity classification based on confidence score
 export type AuthenticityStatus = 'fake' | 'uncertain' | 'real';
 
-// AI analysis result from Gemini Vision
+// AI analysis result from Gemini Vision (SLA is NOT determined by AI)
 export interface GeminiAnalysisResult {
   generatedDescription: string;
   category: string; // Type of issue (pothole, garbage, streetlight, etc.)
   severity: 'low' | 'medium' | 'high' | 'critical';
   priority: number; // 1-10 score
-  suggestedSLA: number; // hours
   confidenceScore: number; // 0.0 - 1.0
   authenticityStatus: AuthenticityStatus; // derived from confidenceScore
 }

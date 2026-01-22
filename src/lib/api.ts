@@ -43,15 +43,38 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  getCitizenComplaints: (citizenId: string) =>
-    request<{ success: boolean; complaints: Complaint[] }>(
-      `/complaints/citizen/${citizenId}`
-    ),
+  // 🔥 DEFENSIVE: Handle both array and object responses
+  getCitizenComplaints: async (citizenId: string): Promise<{ complaints: Complaint[] }> => {
+    try {
+      const data = await request<Complaint[] | { complaints?: Complaint[] }>(
+        `/complaints/citizen/${citizenId}`
+      );
+      // Backend may return array directly OR { complaints: [] }
+      if (Array.isArray(data)) {
+        return { complaints: data };
+      }
+      return { complaints: data?.complaints ?? [] };
+    } catch (error) {
+      console.error('Failed to fetch citizen complaints:', error);
+      throw error; // Let caller decide how to handle; preserves existing UI state
+    }
+  },
 
-  getOfficialComplaints: (officialId: string) =>
-    request<{ success: boolean; complaints: Complaint[] }>(
-      `/complaints/official/${encodeURIComponent(officialId)}`
-    ),
+  // 🔥 DEFENSIVE: Handle both array and object responses
+  getOfficialComplaints: async (officialId: string): Promise<{ complaints: Complaint[] }> => {
+    try {
+      const data = await request<Complaint[] | { complaints?: Complaint[] }>(
+        `/complaints/official/${encodeURIComponent(officialId)}`
+      );
+      if (Array.isArray(data)) {
+        return { complaints: data };
+      }
+      return { complaints: data?.complaints ?? [] };
+    } catch (error) {
+      console.error('Failed to fetch official complaints:', error);
+      throw error;
+    }
+  },
 
   updateComplaintStatus: (
     complaintId: string,
@@ -70,10 +93,21 @@ export const api = {
       `/complaints/official/${officialId}/stats`
     ),
 
-  getComplaintTimeline: (complaintId: string) =>
-    request<{ success: boolean; complaintId: string; timeline: TimelineEvent[] }>(
-      `/complaints/${complaintId}/timeline`
-    ),
+  // 🔥 DEFENSIVE: Handle missing timeline
+  getComplaintTimeline: async (complaintId: string): Promise<{ timeline: TimelineEvent[] }> => {
+    try {
+      const data = await request<{ timeline?: TimelineEvent[] } | TimelineEvent[]>(
+        `/complaints/${complaintId}/timeline`
+      );
+      if (Array.isArray(data)) {
+        return { timeline: data };
+      }
+      return { timeline: data?.timeline ?? [] };
+    } catch (error) {
+      console.error('Failed to fetch timeline:', error);
+      return { timeline: [] };
+    }
+  },
 
   updateComplaintStatusV2: (complaintId: string, payload: { status: 'in_progress' | 'resolved'; note?: string }) =>
     request<{ success: boolean; complaint: Complaint }>(`/complaints/${complaintId}/status`, {
@@ -83,6 +117,19 @@ export const api = {
 
   getOfficialAIBrief: (officialId: string) =>
     request<{ success: boolean; brief: string }>(`/complaints/official/${officialId}/ai-brief`),
+
+  /** Get dashboard stats with escalation counters */
+  getDashboardStats: async () => {
+    try {
+      return await request<{
+        counters: Record<string, number>;
+        raw: { total: number; escalated: number; slaBreaches: number; resolvedToday: number; pending: number; critical: number };
+      }>(`/complaints/dashboard/stats`);
+    } catch (error) {
+      console.error('Failed to fetch dashboard stats:', error);
+      return { counters: {}, raw: { total: 0, escalated: 0, slaBreaches: 0, resolvedToday: 0, pending: 0, critical: 0 } };
+    }
+  },
 
   /** Get live stats for real-time escalation count (hackathon demo) */
   getLiveStats: () =>
@@ -96,3 +143,4 @@ export const api = {
       timestamp: string;
     }>(`/complaints/_debug/live-stats`),
 };
+

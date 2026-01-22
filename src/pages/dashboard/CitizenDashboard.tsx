@@ -30,6 +30,7 @@ export default function CitizenDashboard() {
   const { toast } = useToast();
 
   const [complaints, setComplaints] = useState<Complaint[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [nowTick, setNowTick] = useState(Date.now());
@@ -93,17 +94,29 @@ export default function CitizenDashboard() {
 
   useEffect(() => {
     const fetchComplaints = async () => {
-      if (!userProfile?.uid) return;
+      if (!userProfile?.uid) {
+        console.log('🔍 No userProfile.uid, skipping fetch');
+        return;
+      }
+      console.log('🔍 Fetching complaints for citizenId:', userProfile.uid);
       setLoading(true);
       try {
-        const { complaints } = await api.getCitizenComplaints(userProfile.uid);
-        setComplaints(complaints);
+        const result = await api.getCitizenComplaints(userProfile.uid);
+        console.log('🔍 API response:', result);
+        console.log('🔍 Complaints array:', result?.complaints);
+        console.log('🔍 Complaints count:', result?.complaints?.length ?? 0);
+        // 🔥 DEFENSIVE: Always ensure we have an array
+        setComplaints(result?.complaints ?? []);
+        setLoadError(null);
       } catch (error) {
+        console.error('❌ Failed to fetch complaints:', error);
+        // 🔥 DEFENSIVE: Preserve current list if backend hiccups
         toast({
           title: 'Could not load complaints',
           description: error instanceof Error ? error.message : 'Please try again.',
           variant: 'destructive',
         });
+        setLoadError(error instanceof Error ? error.message : 'Unable to load complaints');
       } finally {
         setLoading(false);
       }
@@ -123,19 +136,23 @@ export default function CitizenDashboard() {
   };
 
   const filteredComplaints = useMemo(() => {
+    // 🔥 DEFENSIVE: Ensure we always work with an array
+    const safeComplaints = Array.isArray(complaints) ? complaints : [];
     const term = search.toLowerCase();
-    if (!term) return complaints;
-    return complaints.filter((c) =>
+    if (!term) return safeComplaints;
+    return safeComplaints.filter((c) =>
       [c.description, c.category, c.title]
         .filter(Boolean)
-        .some((field) => field.toLowerCase().includes(term))
+        .some((field) => field?.toLowerCase().includes(term))
     );
   }, [complaints, search]);
 
   const stats = useMemo(() => {
-    const total = complaints.length;
-    const resolved = complaints.filter((c) => c.status === 'resolved').length;
-    const escalated = complaints.filter((c) => c.escalationLevel > 0 || c.status === 'escalated').length;
+    // 🔥 DEFENSIVE: Ensure we always work with an array
+    const safeComplaints = Array.isArray(complaints) ? complaints : [];
+    const total = safeComplaints.length;
+    const resolved = safeComplaints.filter((c) => c.status === 'resolved').length;
+    const escalated = safeComplaints.filter((c) => c.escalationLevel > 0 || c.status === 'escalated').length;
     const pending = total - resolved;
     return [
       { label: 'Total Complaints', value: total, icon: FileText, color: 'primary' },
@@ -154,8 +171,13 @@ export default function CitizenDashboard() {
 
   const statusLabel = (status: Complaint['status']) => status.replace('_', ' ');
 
-  const getDeadline = (c: Complaint) =>
-    new Date((c.slaDeadline as any) ?? (c.expectedResolutionTime as any));
+  // 🔥 SLA: Use ONLY nextEscalationAt (backend authoritative source)
+  const getDeadline = (c: Complaint) => {
+    if (!c.nextEscalationAt) {
+      return null;
+    }
+    return new Date(c.nextEscalationAt);
+  };
 
   const formatRemaining = (ms: number) => {
     const sign = ms < 0 ? '-' : '';
@@ -173,7 +195,7 @@ export default function CitizenDashboard() {
     setTimelineLoading(true);
     try {
       const res = await api.getComplaintTimeline(c.id);
-      setTimeline(res.timeline);
+      setTimeline(res?.timeline ?? []);
     } catch (error) {
       toast({
         title: 'Unable to load timeline',
@@ -288,6 +310,12 @@ export default function CitizenDashboard() {
           </motion.div>
         )}
 
+        {loadError && !loading && (
+          <div className="mb-6 p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-sm text-red-200">
+            Unable to load complaints. Please retry.
+          </div>
+        )}
+
         {/* Stats Grid */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           {stats.map((stat, index) => (
@@ -382,9 +410,18 @@ export default function CitizenDashboard() {
                         <span>Status: {statusLabel(complaint.status)}</span>
                         <span>Priority: {complaint.priority}/10</span>
                         <span>Confidence: {(complaint.confidenceScore * 100).toFixed(0)}%</span>
-                        <span>
-                          SLA remaining: {formatRemaining(getDeadline(complaint).getTime() - nowTick)}
-                        </span>
+                        {(() => {
+                          const deadline = getDeadline(complaint);
+                          if (!deadline) {
+                            return <span className="text-muted-foreground">No SLA</span>;
+                          }
+                          const remaining = deadline.getTime() - nowTick;
+                          return (
+                            <span className={remaining < 0 ? 'text-destructive' : ''}>
+                              SLA: {formatRemaining(remaining)}
+                            </span>
+                          );
+                        })()}
                         <span className="text-primary font-semibold">AI: Gemini Vision</span>
                       </div>
                     </div>

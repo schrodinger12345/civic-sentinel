@@ -3,6 +3,9 @@ import { Complaint, GeminiAnalysisResult, AgentDecision, AuthenticityStatus } fr
 import { geminiService } from './gemini.service.js';
 import { firebaseService } from './firebase.service.js';
 
+// 🔥 SLA is intentionally 10 seconds for demo determinism
+const SLA_MS = 10_000;
+
 // Result type for submission - can be a complaint or a rejection
 export type SubmitComplaintResult =
   | { success: true; complaint: Complaint }
@@ -40,8 +43,7 @@ export class ComplaintService {
         category: 'other',
         severity: 'medium',
         priority: 5,
-        suggestedSLA: 48,
-        confidenceScore: 0.5, // Uncertain when AI fails
+        confidenceScore: 0.5,
         authenticityStatus: 'uncertain',
       };
     }
@@ -57,23 +59,19 @@ export class ComplaintService {
       };
     }
 
-    // Step 3: Create complaint object
+    // Step 3: Create complaint object with FIXED 10-second SLA
     const now = new Date();
-    const demoSeconds = Number(process.env.DEMO_SLA_SECONDS ?? '0');
-    const baseMs = demoSeconds > 0
-      ? demoSeconds * 1000
-      : analysis.suggestedSLA * 60 * 60 * 1000;
-    const expectedResolution = new Date(now.getTime() + baseMs);
+    const nextEscalationAt = new Date(now.getTime() + SLA_MS);
 
     // Build agentDecision object - NEVER recomputed after submission
     const agentDecision: AgentDecision = usedAI
       ? {
         source: 'gemini',
         raw: {
-          department: analysis.category, // Using category as department for now
+          department: analysis.category,
           severity: analysis.severity.toUpperCase(),
           priority: analysis.priority,
-          sla_seconds: demoSeconds > 0 ? demoSeconds : analysis.suggestedSLA * 3600,
+          sla_seconds: SLA_MS / 1000, // Always 10 seconds
           reasoning: `AI confidence: ${(analysis.confidenceScore * 100).toFixed(1)}%`,
         },
         decidedAt: now,
@@ -108,11 +106,9 @@ export class ComplaintService {
       confidenceScore: analysis.confidenceScore,
       authenticityStatus: analysis.authenticityStatus,
 
-      // Status
+      // Status tracking - nextEscalationAt is the SINGLE SOURCE OF TRUTH for SLA
       status: 'analyzed',
-      expectedResolutionTime: expectedResolution,
-      slaHours: analysis.suggestedSLA,
-      slaDeadline: expectedResolution,
+      nextEscalationAt,
 
       // Agent Decision - verbatim Gemini output for proof of agency
       agentDecision,
@@ -125,7 +121,7 @@ export class ComplaintService {
       auditLog: [
         {
           timestamp: now,
-          action: `Complaint submitted and analyzed. Category: ${analysis.category}, Severity: ${analysis.severity}, Confidence: ${(analysis.confidenceScore * 100).toFixed(1)}%`,
+          action: `Complaint submitted. SLA: ${SLA_MS / 1000}s. Category: ${analysis.category}, Severity: ${analysis.severity}`,
           actor: 'system',
           details: {
             title,
@@ -135,6 +131,19 @@ export class ComplaintService {
         },
       ],
     };
+
+    // 🔥 DEFENSIVE: Hard delete legacy SLA fields before write
+    delete (complaint as any).slaHours;
+    delete (complaint as any).slaDeadline;
+    delete (complaint as any).expectedResolutionTime;
+
+    // 🔥 ASSERTION: SLA must be exactly 10 seconds
+    const slaDiff = complaint.nextEscalationAt!.getTime() - complaint.createdAt.getTime();
+    if (slaDiff !== SLA_MS) {
+      throw new Error(`SLA VIOLATION: nextEscalationAt is ${slaDiff}ms, expected ${SLA_MS}ms`);
+    }
+
+    console.log(`🕐 SLA set: createdAt=${now.toISOString()}, nextEscalationAt=${nextEscalationAt.toISOString()}, diff=${slaDiff}ms`);
 
     // Step 4: Save to Firebase
     await firebaseService.createComplaint(complaint);
@@ -259,8 +268,9 @@ export class ComplaintService {
     const completed = complaints.filter(c => c.status === 'resolved');
     if (completed.length === 0) return 100;
 
+    // SLA compliance: resolved before nextEscalationAt (if set)
     const compliant = completed.filter(
-      c => c.updatedAt.getTime() <= c.expectedResolutionTime.getTime()
+      c => c.nextEscalationAt && c.updatedAt.getTime() <= c.nextEscalationAt.getTime()
     ).length;
 
     return Math.round((compliant / completed.length) * 100);

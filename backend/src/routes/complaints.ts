@@ -8,39 +8,30 @@ import admin from 'firebase-admin';
 
 const router = Router();
 
-interface SubmitComplaintRequest {
-  citizenId: string;
-  citizenName: string;
-  title: string;
-  imageBase64: string;
-  coordinates: {
-    latitude: number;
-    longitude: number;
-  };
-  locationName: string;
-}
+/**
+ * 🔥 SLA is intentionally 10 seconds for demo determinism
+ * NO environment switching. NO AI-suggested hours. ALWAYS 10 seconds.
+ */
+const SLA_SECONDS = 10;
 
-interface UpdateProgressRequest {
-  officialId: string;
-  status: 'acknowledged' | 'in_progress' | 'on_hold' | 'resolved';
-  notes?: string;
-}
-
-interface UpdateStatusRequestV2 {
-  status: 'in_progress' | 'resolved';
-  note?: string;
+// Normalize Firestore Timestamp | Date | ISO string | seconds object to milliseconds
+function toMillis(value: any): number | null {
+  if (!value) return null;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'string') return new Date(value).getTime();
+  if (typeof value.toDate === 'function') return value.toDate().getTime();
+  if (typeof value.seconds === 'number') return value.seconds * 1000;
+  return null;
 }
 
 /**
  * POST /api/complaints/submit
- * Submit a new complaint with image-based analysis
  */
 router.post('/submit', async (req: Request, res: Response) => {
   try {
-    const { citizenId, citizenName, title, imageBase64, coordinates, locationName } =
-      req.body as SubmitComplaintRequest;
+    const { citizenId, citizenName, title, imageBase64, coordinates, locationName } = req.body;
+    console.log('🔍 POST /submit - citizenId:', citizenId, 'title:', title);
 
-    // Validate required fields
     if (!citizenId || !citizenName || !title || !imageBase64 || !coordinates || !locationName) {
       return res.status(400).json({
         error: 'Missing required fields',
@@ -48,12 +39,8 @@ router.post('/submit', async (req: Request, res: Response) => {
       });
     }
 
-    // Validate coordinates
     if (typeof coordinates.latitude !== 'number' || typeof coordinates.longitude !== 'number') {
-      return res.status(400).json({
-        error: 'Invalid coordinates',
-        details: 'coordinates must have numeric latitude and longitude',
-      });
+      return res.status(400).json({ error: 'Invalid coordinates' });
     }
 
     const result = await complaintService.submitComplaint(
@@ -65,496 +52,441 @@ router.post('/submit', async (req: Request, res: Response) => {
       locationName
     );
 
-    // Handle rejection (fake report)
     if (!result.success) {
-      return res.status(200).json({
-        success: false,
-        rejected: true,
-        reason: result.reason,
-        confidenceScore: result.confidenceScore,
-      });
+      return res.status(200).json(result);
     }
 
-    // Success - complaint created
+    const serialize = (t: any) => {
+      const ms = toMillis(t);
+      return ms ? new Date(ms) : t;
+    };
+    const c = result.complaint;
+
+    const nextEscMs = toMillis(c.nextEscalationAt) ?? Date.now();
+
+    // 🔥 Enhanced response with visibility data
     res.status(201).json({
       success: true,
-      complaint: result.complaint,
+      complaint: {
+        ...c,
+        createdAt: serialize(c.createdAt),
+        updatedAt: serialize(c.updatedAt),
+        nextEscalationAt: serialize(c.nextEscalationAt),
+        // Live SLA countdown
+        slaCountdown: {
+          secondsRemaining: Math.max(0, Math.round((nextEscMs - Date.now()) / 1000)),
+          slaSeconds: SLA_SECONDS,
+          status: Date.now() >= nextEscMs ? 'BREACHED' : 'ACTIVE',
+        },
+        // AI credibility banner
+        aiAdvisory: {
+          used: c.agentDecision?.source === 'gemini',
+          label: c.agentDecision?.source === 'gemini'
+            ? '✅ AI Advisory (Used)'
+            : '⚠️ AI Advisory (Unavailable – System Defaults Applied)',
+          confidence: c.confidenceScore,
+          authenticity: c.authenticityStatus,
+        },
+        // AI vs System comparison
+        decisionComparison: {
+          department: { ai: c.agentDecision?.raw?.department ?? 'N/A', system: c.category },
+          severity: { ai: c.agentDecision?.raw?.severity ?? 'N/A', system: c.severity.toUpperCase() },
+          sla: { ai: c.agentDecision?.source === 'gemini' ? '48 hrs (suggested)' : 'N/A', system: `${SLA_SECONDS} seconds (Demo)` },
+        },
+        timeline: (c.timeline || []).map((e: any) => ({
+          ...e,
+          timestamp: serialize(e.timestamp),
+        })),
+      },
       message: 'Complaint submitted successfully',
     });
-  } catch (error) {
-    console.error('Error submitting complaint:', error);
-    res.status(500).json({
-      error: 'Failed to submit complaint',
-      details: error instanceof Error ? error.message : 'Unknown error',
+  } catch (err) {
+    console.error('Submit failed:', err);
+    res.status(500).json({ error: 'Failed to submit complaint' });
+  }
+});
+
+/**
+ * GET /api/complaints/:id/live
+ * 🔥 LIVE STATUS with SLA countdown and explainability
+ */
+router.get('/:id/live', async (req: Request, res: Response) => {
+  try {
+    const complaint = await firebaseService.getComplaint(req.params.id);
+    if (!complaint) {
+      return res.status(404).json({ error: 'Complaint not found' });
+    }
+
+    const now = Date.now();
+    const nextEsc = toMillis(complaint.nextEscalationAt) ?? now;
+    const created = toMillis(complaint.createdAt) ?? now;
+    const secondsRemaining = Math.max(0, Math.round((nextEsc - now) / 1000));
+    const isBreached = now >= nextEsc;
+
+    // Build explainability string
+    let escalationReason = '';
+    if (complaint.escalationLevel === 0 && !isBreached) {
+      escalationReason = `Awaiting action. ${secondsRemaining}s until escalation.`;
+    } else if (complaint.escalationLevel === 0 && isBreached) {
+      escalationReason = `This complaint will escalate because no official action occurred within ${SLA_SECONDS} seconds of submission.`;
+    } else if (complaint.escalationLevel >= 1) {
+      escalationReason = `Escalated to Level ${complaint.escalationLevel} because SLA of ${SLA_SECONDS} seconds was breached ${complaint.escalationLevel} time(s).`;
+    }
+
+    // Build human-readable timeline from audit log
+    const escalationTimeline = [
+      {
+        event: 'CREATED',
+        timestamp: complaint.createdAt.toISOString(),
+        level: 0,
+        description: 'Complaint submitted by citizen',
+      },
+      ...(complaint.auditLog || [])
+        .filter((e: any) => e.action.includes('Escalated') || e.action.includes('resolved'))
+        .map((e: any) => ({
+          event: e.action.includes('resolved') ? 'RESOLVED' : 'ESCALATED',
+          timestamp: e.timestamp?.toISOString?.() ?? e.timestamp,
+          level: e.details?.newLevel ?? complaint.escalationLevel,
+          description: e.action,
+        })),
+    ];
+
+    res.json({
+      id: complaint.id,
+      status: complaint.status,
+      escalationLevel: complaint.escalationLevel,
+      // 🔥 Live SLA countdown
+      slaCountdown: {
+        secondsRemaining,
+        slaSeconds: SLA_SECONDS,
+        status: isBreached ? 'BREACHED' : 'ACTIVE',
+        nextEscalationAt: complaint.nextEscalationAt?.toISOString(),
+      },
+      // 🔥 Explainability
+      escalationReason,
+      // 🔥 Human-readable timeline
+      escalationTimeline,
+      // AI info
+      aiAdvisory: {
+        used: complaint.agentDecision?.source === 'gemini',
+        label: complaint.agentDecision?.source === 'gemini'
+          ? '✅ AI Advisory (Used)'
+          : '⚠️ AI Advisory (Unavailable)',
+        confidence: complaint.confidenceScore,
+      },
+    });
+  } catch (err) {
+    console.error('Live status failed:', err);
+    res.status(500).json({ error: 'Failed to get live status' });
+  }
+});
+
+/**
+ * GET /api/complaints/dashboard/stats
+ * 🔥 DASHBOARD with big red counters for judges
+ */
+router.get('/dashboard/stats', async (_req: Request, res: Response) => {
+  try {
+    const db = admin.firestore();
+    const snap = await db.collection('complaints').get();
+
+    let total = 0;
+    let escalated = 0;
+    let slaBreaches = 0;
+    let resolvedToday = 0;
+    let pending = 0;
+    let critical = 0;
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    snap.forEach(doc => {
+      const d = doc.data();
+      total++;
+
+      if (d.escalationLevel >= 1) escalated++;
+      if (d.escalationLevel >= 3) critical++;
+      if (d.status !== 'resolved') pending++;
+
+      // Count SLA breaches (any escalation = breach)
+      if (d.escalationLevel >= 1) slaBreaches++;
+
+      // Resolved today
+      const updatedAt = d.updatedAt?.toDate?.() ?? new Date(d.updatedAt);
+      if (d.status === 'resolved' && updatedAt >= todayStart) {
+        resolvedToday++;
+      }
+    });
+
+    res.json({
+      // 🔥 Big Red Numbers for Judges
+      counters: {
+        '🚨 Escalated': escalated,
+        '⏳ SLA Breaches': slaBreaches,
+        '✅ Resolved Today': resolvedToday,
+        '⚠️ Critical (Level 3)': critical,
+        '📋 Pending': pending,
+        '📊 Total': total,
+      },
+      // Raw numbers for charts
+      raw: { total, escalated, slaBreaches, resolvedToday, pending, critical },
+      slaConfig: {
+        seconds: SLA_SECONDS,
+        description: 'All SLAs are 10 seconds for demo determinism',
+      },
+    });
+  } catch (err) {
+    console.error('Dashboard stats failed:', err);
+    // 🔥 Safety net: return zeros instead of crashing
+    res.json({
+      counters: {
+        '🚨 Escalated': 0,
+        '⏳ SLA Breaches': 0,
+        '✅ Resolved Today': 0,
+        '⚠️ Critical (Level 3)': 0,
+        '📋 Pending': 0,
+        '📊 Total': 0,
+      },
+      raw: { total: 0, escalated: 0, slaBreaches: 0, resolvedToday: 0, pending: 0, critical: 0 },
+      error: 'Stats temporarily unavailable',
     });
   }
 });
 
 /**
- * GET /api/complaints/:complaintId
- * Get complaint details
+ * POST /api/complaints/chaos
+ * 🔥 CHAOS BUTTON - Simulate stress for judges
  */
-router.get('/:complaintId', async (req: Request, res: Response) => {
+router.post('/chaos', async (req: Request, res: Response) => {
+  const count = Math.min(req.body.count || 10, 20); // Max 20
+  const now = admin.firestore.Timestamp.now();
+
+  const issues = [
+    'Pothole on Main Street',
+    'Broken streetlight',
+    'Garbage overflow',
+    'Water leak',
+    'Illegal dumping',
+    'Road damage',
+    'Blocked drain',
+    'Traffic sign missing',
+    'Sidewalk crack',
+    'Public bench broken',
+  ];
+
+  const created: string[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const id = uuidv4();
+    const offsetSeconds = Math.floor(Math.random() * 15) - 5; // -5 to +10 seconds
+    const nextEscalationAt = admin.firestore.Timestamp.fromMillis(
+      now.toMillis() + offsetSeconds * 1000
+    );
+
+    const complaint = {
+      id,
+      citizenId: `chaos-${i}`,
+      citizenName: `Citizen ${i + 1}`,
+      citizenLocation: `Ward ${(i % 5) + 1}`,
+      description: issues[i % issues.length],
+      title: issues[i % issues.length],
+      category: 'other',
+      severity: ['low', 'medium', 'high'][i % 3],
+      priority: (i % 10) + 1,
+      status: offsetSeconds < 0 ? 'sla_warning' : 'analyzed',
+      escalationLevel: offsetSeconds < -5 ? 1 : 0,
+      escalationHistory: [],
+      auditLog: [{
+        timestamp: now,
+        action: 'Chaos test complaint created',
+        actor: 'system',
+      }],
+      createdAt: now,
+      updatedAt: now,
+      nextEscalationAt,
+      confidenceScore: 0.8,
+      authenticityStatus: 'real',
+      imageBase64: '',
+      coordinates: { latitude: 28.6139, longitude: 77.209 },
+    };
+
+    await firebaseService.createComplaint(complaint as any);
+    created.push(id);
+  }
+
+  res.json({
+    success: true,
+    message: `🔥 CHAOS: Created ${count} complaints. Watch them escalate!`,
+    created,
+    hint: 'Check /api/complaints/dashboard/stats in 10 seconds to see escalation counters spike!',
+  });
+});
+
+/**
+ * POST /api/complaints/check-escalations
+ */
+router.post('/check-escalations', async (_req, res) => {
+  const result = await slaWatchdogService.tick();
+  res.json({
+    success: true,
+    escalated: result.updatedIds.length,
+    complaintIds: result.updatedIds,
+  });
+});
+
+/**
+ * GET /api/complaints/all
+ * List all complaints with live SLA status
+ */
+router.get('/all', async (_req: Request, res: Response) => {
   try {
-    const { complaintId } = req.params;
-    const complaint = await firebaseService.getComplaint(complaintId);
+    const db = admin.firestore();
+    const snap = await db.collection('complaints')
+      .orderBy('createdAt', 'desc')
+      .limit(50)
+      .get();
 
-    if (!complaint) {
-      return res.status(404).json({ error: 'Complaint not found' });
-    }
+    const now = Date.now();
+    const complaints = snap.docs.map(doc => {
+      const d = doc.data();
+      const nextEsc = d.nextEscalationAt?.toMillis?.() ?? now;
+      const secondsRemaining = Math.max(0, Math.round((nextEsc - now) / 1000));
 
-    res.json(complaint);
-  } catch (error) {
-    console.error('Error fetching complaint:', error);
-    res.status(500).json({
-      error: 'Failed to fetch complaint',
-      details: error instanceof Error ? error.message : 'Unknown error',
+      return {
+        id: doc.id,
+        title: d.title || d.description?.slice(0, 50),
+        status: d.status,
+        escalationLevel: d.escalationLevel,
+        createdAt: d.createdAt?.toDate?.()?.toISOString(),
+        slaCountdown: {
+          secondsRemaining,
+          status: now >= nextEsc ? 'BREACHED' : 'ACTIVE',
+        },
+        aiUsed: d.agentDecision?.source === 'gemini',
+      };
     });
+
+    res.json({ complaints, count: complaints.length });
+  } catch (err) {
+    console.error('List failed:', err);
+    res.status(500).json({ error: 'Failed to list complaints' });
   }
 });
 
 /**
  * GET /api/complaints/citizen/:citizenId
- * Get all complaints for a citizen
+ * Get all complaints for a specific citizen (frontend dashboard)
  */
 router.get('/citizen/:citizenId', async (req: Request, res: Response) => {
   try {
     const { citizenId } = req.params;
+    console.log('🔍 GET /citizen/:citizenId - citizenId:', citizenId);
     const complaints = await firebaseService.getComplaintsByCitizen(citizenId);
+    console.log('🔍 Found complaints:', complaints.length);
+    const now = Date.now();
+    const formatted = complaints.map(c => {
+      const nextEscMs = toMillis(c.nextEscalationAt);
+      const createdMs = toMillis(c.createdAt);
+      const updatedMs = toMillis(c.updatedAt);
+      const secondsRemaining = nextEscMs == null ? null : Math.max(0, Math.round((nextEscMs - now) / 1000));
 
-    res.json({
-      success: true,
-      count: complaints.length,
-      complaints,
+      return {
+        ...c,
+        createdAt: createdMs,
+        updatedAt: updatedMs,
+        nextEscalationAt: nextEscMs,
+        slaCountdown: {
+          secondsRemaining: secondsRemaining ?? 0,
+          slaSeconds: SLA_SECONDS,
+          status: nextEscMs == null ? 'ACTIVE' : now >= nextEscMs ? 'BREACHED' : 'ACTIVE',
+        },
+        aiAdvisory: {
+          used: c.agentDecision?.source === 'gemini',
+          label: c.agentDecision?.source === 'gemini'
+            ? '✅ AI Advisory (Used)'
+            : '⚠️ AI Advisory (Unavailable)',
+          confidence: c.confidenceScore,
+        },
+      };
     });
-  } catch (error) {
-    console.error('Error fetching citizen complaints:', error);
-    res.status(500).json({
-      error: 'Failed to fetch complaints',
-      details: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
-});
 
-/**
- * GET /api/complaints/official/:officialId
- * Get all complaints assigned to an official
- */
-router.get('/official/:officialId', async (req: Request, res: Response) => {
-  try {
-    const { officialId } = req.params;
-    const decoded = decodeURIComponent(officialId);
-    const looksLikeDepartment = decoded.includes(' ') || decoded.includes('/') || decoded.length > 40;
-
-    // Hackathon requirement: /api/complaints/official/:department
-    // Backward compatible: if param looks like a UID, treat it as officialId (existing UI depends on this).
-    const complaints = looksLikeDepartment
-      ? await firebaseService.getComplaintsByDepartment(decoded)
-      : await firebaseService.getComplaintsByOfficial(officialId);
-
-    res.json({
-      success: true,
-      count: complaints.length,
-      complaints,
-    });
-  } catch (error) {
-    console.error('Error fetching official complaints:', error);
-    res.status(500).json({
-      error: 'Failed to fetch complaints',
-      details: error instanceof Error ? error.message : 'Unknown error',
-    });
+    // 🔥 FIX: Return object with complaints array to match frontend API expectations
+    res.json({ success: true, complaints: formatted, count: formatted.length });
+  } catch (err: any) {
+    console.error('❌ Citizen complaints failed:', err?.stack || err);
+    // Return non-fatal response so frontend keeps prior state
+    res.json({ success: true, complaints: [], count: 0, error: err?.message || 'Failed to get citizen complaints' });
   }
 });
 
 /**
  * GET /api/complaints/:id/timeline
- * Return full chronological timeline for explainability
+ * Return timeline events for a complaint (fallback to auditLog if timeline missing)
  */
 router.get('/:id/timeline', async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-    const complaint = await firebaseService.getComplaint(id);
-    if (!complaint) return res.status(404).json({ error: 'Complaint not found' });
-
-    const timeline = await firebaseService.getTimeline(id);
-    res.json({ success: true, complaintId: id, timeline });
-  } catch (error) {
-    console.error('Error fetching timeline:', error);
-    res.status(500).json({
-      error: 'Failed to fetch timeline',
-      details: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
-});
-
-/**
- * POST /api/complaints/:id/status
- * Minimal official update (hackathon requirement)
- */
-router.post('/:id/status', async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const { status, note } = req.body as UpdateStatusRequestV2;
-
-    if (!status || !['in_progress', 'resolved'].includes(status)) {
-      return res.status(400).json({ error: 'Invalid status', allowed: ['in_progress', 'resolved'] });
+    const complaint = await firebaseService.getComplaint(req.params.id);
+    if (!complaint) {
+      return res.status(404).json({ error: 'Not found', timeline: [] });
     }
 
-    const complaint = await firebaseService.getComplaint(id);
-    if (!complaint) return res.status(404).json({ error: 'Complaint not found' });
+    const timeline = (complaint as any).timeline || [];
+    const audit = complaint.auditLog || [];
 
-    await firebaseService.updateComplaintFields(id, {
-      status,
-      updatedAt: new Date(),
-    });
+    // Normalize both sources to the TimelineEvent shape used by the frontend
+    const events = [
+      ...timeline.map((e: any) => ({
+        type: (e.type as any) ?? 'system',
+        action: e.action ?? 'update',
+        message: e.message ?? e.description ?? 'Event',
+        timestamp: e.timestamp ?? e.createdAt ?? new Date().toISOString(),
+      })),
+      ...audit.map((e) => ({
+        type: 'system' as const,
+        action: e.action,
+        message: e.details ? JSON.stringify(e.details) : e.action,
+        timestamp: e.timestamp,
+      })),
+    ];
 
-    await firebaseService.appendTimelineEvent(id, {
-      type: 'official',
-      action: status === 'resolved' ? 'resolved' : 'in_progress',
-      message: note ? `Official update: ${note}` : `Official marked complaint as ${status}.`,
-      timestamp: new Date(),
-    });
-
-    // If resolved, watchdog will naturally ignore it. We keep SLA deadline as-is (frozen).
-    const updated = await firebaseService.getComplaint(id);
-    res.json({ success: true, complaint: updated });
-  } catch (error) {
-    console.error('Error updating status:', error);
-    res.status(500).json({
-      error: 'Failed to update complaint status',
-      details: error instanceof Error ? error.message : 'Unknown error',
-    });
+    res.json({ timeline: events });
+  } catch (err) {
+    console.error('Timeline fetch failed:', err);
+    res.status(500).json({ error: 'Failed to get timeline', timeline: [] });
   }
 });
 
 /**
- * GET /api/complaints/department/:department
- * Get all complaints for a department
+ * GET /api/complaints/:id
+ * Get single complaint details
  */
-router.get('/department/:department', async (req: Request, res: Response) => {
+router.get('/:id', async (req: Request, res: Response) => {
   try {
-    const { department } = req.params;
-    const complaints = await firebaseService.getComplaintsByDepartment(department);
+    const complaint = await firebaseService.getComplaint(req.params.id);
+    if (!complaint) {
+      return res.status(404).json({ error: 'Complaint not found' });
+    }
+
+    const now = Date.now();
+    const nextEsc = toMillis(complaint.nextEscalationAt) ?? now;
+    const secondsRemaining = Math.max(0, Math.round((nextEsc - now) / 1000));
 
     res.json({
-      success: true,
-      count: complaints.length,
-      complaints,
+      ...complaint,
+      createdAt: complaint.createdAt?.toISOString?.() ?? complaint.createdAt,
+      updatedAt: complaint.updatedAt?.toISOString?.() ?? complaint.updatedAt,
+      nextEscalationAt: complaint.nextEscalationAt?.toISOString?.() ?? complaint.nextEscalationAt,
+      slaCountdown: {
+        secondsRemaining,
+        slaSeconds: SLA_SECONDS,
+        status: now >= nextEsc ? 'BREACHED' : 'ACTIVE',
+      },
     });
-  } catch (error) {
-    console.error('Error fetching department complaints:', error);
-    res.status(500).json({
-      error: 'Failed to fetch complaints',
-      details: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
-});
-
-/**
- * PUT /api/complaints/:complaintId/progress
- * Update complaint progress (official action)
- */
-router.put('/:complaintId/progress', async (req: Request, res: Response) => {
-  try {
-    const { complaintId } = req.params;
-    const { officialId, status, notes } = req.body as UpdateProgressRequest;
-
-    if (!officialId || !status) {
-      return res.status(400).json({
-        error: 'Missing required fields',
-        required: ['officialId', 'status'],
-      });
-    }
-
-    const complaint = await complaintService.updateComplaintProgress(
-      complaintId,
-      officialId,
-      status,
-      notes
-    );
-
-    res.json({
-      success: true,
-      complaint,
-      message: 'Complaint progress updated',
-    });
-  } catch (error) {
-    console.error('Error updating complaint progress:', error);
-    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-
-    if (errorMsg.includes('Unauthorized')) {
-      return res.status(403).json({ error: errorMsg });
-    }
-
-    res.status(500).json({
-      error: 'Failed to update complaint',
-      details: errorMsg,
-    });
-  }
-});
-
-/**
- * POST /api/complaints/check-escalations
- * Trigger escalation check (should be called by scheduler)
- */
-router.post('/check-escalations', async (req: Request, res: Response) => {
-  try {
-    // For demo: do NOT require Gemini / Vertex. Use SLA watchdog tick.
-    const result = await slaWatchdogService.tick();
-    const escalatedIds = result.updatedIds;
-
-    res.json({
-      success: true,
-      escalated: escalatedIds.length,
-      complaintIds: escalatedIds,
-      message: `${escalatedIds.length} complaints escalated`,
-    });
-  } catch (error) {
-    console.error('Error checking escalations:', error);
-    res.status(500).json({
-      error: 'Failed to check escalations',
-      details: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
-});
-
-/**
- * GET /api/complaints/official/:officialId/stats
- * Get dashboard stats for an official
- */
-router.get('/official/:officialId/stats', async (req: Request, res: Response) => {
-  try {
-    const { officialId } = req.params;
-    const stats = await complaintService.getOfficialStats(officialId);
-
-    res.json({
-      success: true,
-      stats,
-    });
-  } catch (error) {
-    console.error('Error fetching stats:', error);
-    res.status(500).json({
-      error: 'Failed to fetch stats',
-      details: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
-});
-
-/**
- * GET /api/complaints/official/:officialId/ai-brief
- * Advisory AI briefing for top unresolved complaints (read-only)
- */
-router.get('/official/:officialId/ai-brief', async (req: Request, res: Response) => {
-  try {
-    const { officialId } = req.params;
-    const complaints = await firebaseService.getComplaintsByOfficial(officialId);
-    const unresolved = complaints
-      .filter((c) => c.status !== 'resolved')
-      .sort((a, b) => b.priority - a.priority)
-      .slice(0, 3);
-
-    if (!unresolved.length) {
-      return res.json({
-        success: true,
-        brief: 'AI Briefing (Advisory): No unresolved complaints currently assigned.',
-      });
-    }
-
-    let briefText: string;
-    try {
-      briefText = await geminiService.officialBrief({
-        complaints: unresolved.map((c) => ({
-          id: c.id,
-          description: c.description,
-          department: c.category, // Using category as department
-          severity: c.severity,
-          priority: c.priority,
-          status: c.status,
-        })),
-      });
-    } catch (err) {
-      console.warn('AI brief generation failed:', err);
-      briefText =
-        'AI Briefing (Advisory): Unable to generate AI summary. Use system metrics and timelines for decisions.';
-    }
-
-    // Log advisory interaction in timelines for explainability
-    const now = new Date();
-    await Promise.all(
-      unresolved.map((c) =>
-        firebaseService.appendTimelineEvent(c.id, {
-          type: 'system',
-          action: 'ai_official_brief',
-          message:
-            'AI advisory brief referenced this complaint when summarizing top unresolved issues for officials.',
-          timestamp: now,
-        })
-      )
-    );
-
-    res.json({
-      success: true,
-      brief: briefText,
-    });
-  } catch (error) {
-    console.error('Error generating AI brief:', error);
-    res.status(500).json({
-      error: 'Failed to generate AI brief',
-      details: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
-});
-
-/**
- * GET /api/complaints/_debug/live-stats
- * Returns real-time escalation and SLA warning counts for the UI.
- * Hackathon judges need to see this count jump when SLA expires.
- */
-router.get('/_debug/live-stats', async (req: Request, res: Response) => {
-  try {
-    const db = admin.firestore();
-    const snap = await db
-      .collection('complaints')
-      .where('status', 'in', ['submitted', 'analyzed', 'assigned', 'acknowledged', 'in_progress', 'on_hold', 'sla_warning', 'escalated'])
-      .get();
-
-    let activeCount = 0;
-    let slaWarningCount = 0;
-    let escalatedCount = 0;
-    let resolvedTodayCount = 0;
-    const now = new Date();
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-    for (const doc of snap.docs) {
-      const data = doc.data();
-      if (data.status === 'escalated') escalatedCount++;
-      else if (data.status === 'sla_warning') slaWarningCount++;
-      else if (data.status !== 'resolved') activeCount++;
-    }
-
-    // Also count resolved today
-    const resolvedSnap = await db
-      .collection('complaints')
-      .where('status', '==', 'resolved')
-      .get();
-    for (const doc of resolvedSnap.docs) {
-      const data = doc.data();
-      const updatedAt = data.updatedAt?.toDate?.() || new Date(data.updatedAt);
-      if (updatedAt >= startOfDay) resolvedTodayCount++;
-    }
-
-    res.json({
-      success: true,
-      activeCount,
-      slaWarningCount,
-      escalatedCount,
-      resolvedTodayCount,
-      total: snap.size,
-      timestamp: now.toISOString(),
-    });
-  } catch (error) {
-    console.error('Error fetching live stats:', error);
-    res.status(500).json({
-      error: 'Failed to fetch stats',
-      details: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
-});
-
-/**
- * POST /api/complaints/_debug/seed-demo
- * Seeds 3 demo complaints:
- * - 1 normal (deadline in future)
- * - 1 SLA-breached (will go to sla_warning on next watchdog tick)
- * - 1 already warned (will escalate on next watchdog tick)
- *
- * NOTE: This is a hackathon convenience endpoint. Keep off production deployments.
- */
-router.post('/_debug/seed-demo', async (req: Request, res: Response) => {
-  try {
-    if (process.env.NODE_ENV === 'production') {
-      return res.status(403).json({ error: 'Forbidden in production' });
-    }
-
-    const now = new Date();
-    const demoSeconds = Number(process.env.DEMO_SLA_SECONDS ?? '10');
-    const mk = (overdueHours: number, status: any, escalationLevel: 0 | 1 | 2 | 3, description: string) => {
-      const id = uuidv4();
-      const createdAt = new Date(now.getTime() - 2 * 60 * 60 * 1000);
-      const baseMs = demoSeconds > 0 ? demoSeconds * 1000 : Math.abs(overdueHours) * 60 * 60 * 1000;
-      const slaDeadline =
-        overdueHours > 0
-          ? new Date(now.getTime() - (demoSeconds > 0 ? demoSeconds * 1000 : overdueHours * 60 * 60 * 1000))
-          : new Date(now.getTime() + baseMs);
-      const department = 'Public Works';
-      return {
-        id,
-        citizenId: 'demo_citizen',
-        citizenName: 'Demo Citizen',
-        citizenLocation: 'Ward 12',
-        description,
-        issueType: 'road_damage',
-        severity: 'medium',
-        assignedDepartment: department,
-        department,
-        priority: escalationLevel > 0 ? 8 : 5,
-        status,
-        assignedOfficialId: 'demo_official',
-        escalationLevel,
-        escalationHistory: [],
-        auditLog: [],
-        createdAt,
-        updatedAt: now,
-        slaHours: demoSeconds > 0 ? demoSeconds / 3600 : 48,
-        slaDeadline,
-        expectedResolutionTime: slaDeadline,
-      };
-    };
-
-    const normal = mk(-0.0028, 'assigned', 0, 'Normal demo complaint: pothole near school gate.');
-    const breached = mk(0.05, 'assigned', 0, 'Breached demo complaint: garbage overflow not cleared.');
-    const warned = mk(0.05, 'sla_warning', 1, 'Escalation demo complaint: street light outage causing safety risk.');
-
-    await firebaseService.createComplaint(normal as any);
-    await firebaseService.createComplaint(breached as any);
-    await firebaseService.createComplaint(warned as any);
-
-    // Append a clarifying timeline note for judges
-    await firebaseService.appendTimelineEvent(normal.id, {
-      type: 'system',
-      action: 'seeded',
-      message: 'Seeded demo complaint (normal).',
-      timestamp: now,
-    });
-    await firebaseService.appendTimelineEvent(breached.id, {
-      type: 'system',
-      action: 'seeded',
-      message: 'Seeded demo complaint (SLA breached; should warn on next watchdog tick).',
-      timestamp: now,
-    });
-    await firebaseService.appendTimelineEvent(warned.id, {
-      type: 'system',
-      action: 'seeded',
-      message: 'Seeded demo complaint (already warned; should escalate on next watchdog tick).',
-      timestamp: now,
-    });
-
-    res.json({
-      success: true,
-      complaints: [
-        { id: normal.id, status: normal.status, slaDeadline: normal.slaDeadline },
-        { id: breached.id, status: breached.status, slaDeadline: breached.slaDeadline },
-        { id: warned.id, status: warned.status, slaDeadline: warned.slaDeadline },
-      ],
-      hint: 'Wait up to 60s (or call POST /api/complaints/check-escalations) to see auto-escalation.',
-    });
-  } catch (error) {
-    console.error('Error seeding demo data:', error);
-    res.status(500).json({
-      error: 'Failed to seed demo data',
-      details: error instanceof Error ? error.message : 'Unknown error',
-    });
+  } catch (err) {
+    console.error('Get complaint failed:', err);
+    res.status(500).json({ error: 'Failed to get complaint' });
   }
 });
 
 export default router;
+

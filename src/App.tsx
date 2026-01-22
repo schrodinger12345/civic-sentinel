@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 // Pages
 import Index from "./pages/Index";
@@ -29,60 +30,63 @@ import ReportIssue from "./pages/ReportIssue";
 const queryClient = new QueryClient();
 
 const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <AuthProvider>
-          <Routes>
-            {/* Public Routes */}
-            <Route path="/" element={<Index />} />
-            <Route path="/system" element={<System />} />
+  <ErrorBoundary>
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <BrowserRouter>
+          <AuthProvider>
+            <Routes>
+              {/* Public Routes */}
+              <Route path="/" element={<Index />} />
+              <Route path="/system" element={<System />} />
 
-            {/* Auth Routes */}
-            <Route path="/get-started" element={<GetStarted />} />
-            <Route path="/auth" element={<AuthGateway />} />
-            <Route path="/auth/official" element={<OfficialAuth />} />
-            <Route path="/role-selection" element={<RoleSelection />} />
+              {/* Auth Routes */}
+              <Route path="/get-started" element={<GetStarted />} />
+              <Route path="/auth" element={<AuthGateway />} />
+              <Route path="/auth/official" element={<OfficialAuth />} />
+              <Route path="/role-selection" element={<RoleSelection />} />
 
-            {/* Onboarding Routes */}
-            <Route path="/onboarding/citizen" element={<CitizenOnboarding />} />
-            <Route path="/onboarding/official" element={<OfficialOnboarding />} />
+              {/* Onboarding Routes */}
+              <Route path="/onboarding/citizen" element={<CitizenOnboarding />} />
+              <Route path="/onboarding/official" element={<OfficialOnboarding />} />
 
-            {/* Protected Dashboard Routes */}
-            <Route
-              path="/dashboard/citizen"
-              element={
-                <ProtectedRoute allowedRoles={['citizen']}>
-                  <CitizenDashboard />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/report"
-              element={
-                <ProtectedRoute allowedRoles={['citizen']}>
-                  <ReportIssue />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/dashboard/official"
-              element={
-                <ProtectedRoute allowedRoles={['official']}>
-                  <OfficialDashboard />
-                </ProtectedRoute>
-              }
-            />
+              {/* Protected Dashboard Routes */}
+              <Route
+                path="/dashboard/citizen"
+                element={
+                  <ProtectedRoute allowedRoles={['citizen']}>
+                    <CitizenDashboard />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/report"
+                element={
+                  <ProtectedRoute allowedRoles={['citizen']}>
+                    <ReportIssue />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/dashboard/official"
+                element={
+                  <ProtectedRoute allowedRoles={['official']}>
+                    <OfficialDashboard />
+                  </ProtectedRoute>
+                }
+              />
 
-            {/* Catch-all */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </AuthProvider>
-      </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
+              {/* Catch-all */}
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </AuthProvider>
+        </BrowserRouter>
+      </TooltipProvider>
+    </QueryClientProvider>
+  </ErrorBoundary>
 );
 
 export default App;
+

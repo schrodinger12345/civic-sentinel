@@ -34,24 +34,12 @@ export class FirebaseService {
    */
   async createComplaint(complaint: Complaint): Promise<Complaint> {
     const docRef = db.collection('complaints').doc(complaint.id);
-    const slaDeadline = complaint.slaDeadline ?? complaint.expectedResolutionTime;
-    const slaHours =
-      complaint.slaHours ??
-      Math.max(
-        1,
-        Math.round((slaDeadline.getTime() - complaint.createdAt.getTime()) / (1000 * 60 * 60))
-      );
     const firestoreData: Record<string, any> = {
       ...complaint,
       createdAt: admin.firestore.Timestamp.fromDate(complaint.createdAt),
       updatedAt: admin.firestore.Timestamp.fromDate(complaint.updatedAt),
-      expectedResolutionTime: admin.firestore.Timestamp.fromDate(
-        complaint.expectedResolutionTime
-      ),
-      // Required lifecycle fields (mirror legacy fields for demo clarity)
+      // Required lifecycle fields
       department: complaint.department ?? complaint.assignedDepartment,
-      slaHours,
-      slaDeadline: admin.firestore.Timestamp.fromDate(slaDeadline),
       escalationHistory: complaint.escalationHistory.map(e => ({
         ...e,
         timestamp: admin.firestore.Timestamp.fromDate(e.timestamp),
@@ -68,6 +56,11 @@ export class FirebaseService {
         delete firestoreData[key];
       }
     });
+
+    // 🔥 DEFENSIVE: Hard delete legacy SLA fields to prevent leaks
+    delete firestoreData.slaHours;
+    delete firestoreData.slaDeadline;
+    delete firestoreData.expectedResolutionTime;
 
     await docRef.set(firestoreData);
 
@@ -105,7 +98,7 @@ export class FirebaseService {
   async getComplaint(complaintId: string): Promise<Complaint | null> {
     const doc = await db.collection('complaints').doc(complaintId).get();
     if (!doc.exists) return null;
-    
+
     const data = doc.data()!;
     return this.firestoreToComplaint(data);
   }
@@ -164,12 +157,23 @@ export class FirebaseService {
    * Get all complaints for a citizen
    */
   async getComplaintsByCitizen(citizenId: string): Promise<Complaint[]> {
-    const snapshot = await db
-      .collection('complaints')
-      .where('citizenId', '==', citizenId)
-      .get();
+    console.log('🔍 Firestore query - citizenId:', citizenId);
+    try {
+      const snapshot = await db
+        .collection('complaints')
+        .where('citizenId', '==', citizenId)
+        .get();
 
-    return snapshot.docs.map(doc => this.firestoreToComplaint(doc.data()!));
+      console.log('🔍 Firestore query returned', snapshot.docs.length, 'documents');
+      if (snapshot.docs.length > 0) {
+        console.log('🔍 First doc citizenId:', snapshot.docs[0].data().citizenId);
+      }
+
+      return snapshot.docs.map(doc => this.firestoreToComplaint(doc.data()!));
+    } catch (err: any) {
+      console.error('❌ Firestore query failed for citizenId', citizenId, err?.stack || err);
+      throw err;
+    }
   }
 
   /**
@@ -249,7 +253,7 @@ export class FirebaseService {
     if (!complaint) throw new Error('Complaint not found');
 
     const nextLevel = Math.min(complaint.escalationLevel + 1, 3) as 0 | 1 | 2 | 3;
-    
+
     const escalationEvent: EscalationEvent = {
       timestamp: new Date(),
       level: nextLevel,
@@ -302,15 +306,12 @@ export class FirebaseService {
     updates: Partial<Complaint>
   ): Promise<void> {
     const docRef = db.collection('complaints').doc(complaintId);
-    
+
     const firestoreUpdates: Record<string, any> = {};
-    
+
     for (const [key, value] of Object.entries(updates)) {
       if (value instanceof Date) {
         firestoreUpdates[key] = admin.firestore.Timestamp.fromDate(value);
-      } else if (key === 'slaDeadline' && value) {
-        firestoreUpdates[key] =
-          value instanceof Date ? admin.firestore.Timestamp.fromDate(value) : value;
       } else if (key === 'escalationHistory' && Array.isArray(value)) {
         firestoreUpdates[key] = value.map(e => ({
           ...e,
@@ -337,9 +338,6 @@ export class FirebaseService {
       ...data,
       createdAt: data.createdAt?.toDate?.() || new Date(data.createdAt),
       updatedAt: data.updatedAt?.toDate?.() || new Date(data.updatedAt),
-      expectedResolutionTime:
-        data.expectedResolutionTime?.toDate?.() || new Date(data.expectedResolutionTime),
-      slaDeadline: data.slaDeadline?.toDate?.() || (data.slaDeadline ? new Date(data.slaDeadline) : undefined),
       escalationHistory: (data.escalationHistory || []).map((e: any) => ({
         ...e,
         timestamp: e.timestamp?.toDate?.() || new Date(e.timestamp),

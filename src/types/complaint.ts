@@ -81,9 +81,14 @@ export interface Complaint {
   // Status tracking
   status: ComplaintStatus;
   assignedOfficialId?: string;
-  expectedResolutionTime: string | Date;
-  slaDeadline?: string | Date;
-  slaHours?: number;
+  
+  /**
+   * AGENTIC STATE MACHINE (AUTHORITATIVE)
+   * nextEscalationAt is the ONLY source of truth for when to escalate.
+   * DO NOT compute from createdAt + slaSeconds.
+   * Frontend MUST read this value, never derive it.
+   */
+  nextEscalationAt: string | Date;
   escalationLevel: 0 | 1 | 2 | 3;
   escalationHistory: EscalationEvent[];
   auditLog: AuditEntry[];

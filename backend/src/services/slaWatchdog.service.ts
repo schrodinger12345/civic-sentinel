@@ -1,8 +1,12 @@
 import admin from 'firebase-admin';
 import { firebaseService } from './firebase.service.js';
 import { Complaint } from '../types/complaint.js';
-import { geminiService } from './gemini.service.js';
+import { toDate, toFirestoreDate } from '../utils/firestore.js';
 
+// 🔥 SLA is intentionally 10 seconds for demo determinism
+const SLA_MS = 10_000;
+
+// Only process complaints that are not resolved and have an escalation due
 const ACTIVE_STATUSES = [
   'submitted',
   'analyzed',
@@ -14,18 +18,12 @@ const ACTIVE_STATUSES = [
   'escalated',
 ] as const;
 
-// Dynamic watchdog interval: 1s in demo mode, 60s in production
-const DEMO_SLA_SECONDS = Number(process.env.DEMO_SLA_SECONDS ?? '0');
-const WATCHDOG_INTERVAL_MS = DEMO_SLA_SECONDS > 0 && DEMO_SLA_SECONDS <= 30 ? 1000 : 60000;
-function getDeadline(complaint: Complaint): Date {
-  return complaint.slaDeadline ?? complaint.expectedResolutionTime;
-}
+const MAX_BATCH_SIZE = 5; // Max complaints to process per tick
+const WATCHDOG_INTERVAL_MS = 1000; // 1 second checks for demo
 
 /**
- * Runs inside the Node process (no external scheduler) and enforces SLA deadlines.
- * - every 1s in demo mode (DEMO_SLA_SECONDS <= 30), 60s in production
- * - finds overdue, non-resolved complaints
- * - increments escalationLevel, updates status, extends SLA, appends timeline
+ * SLA Watchdog - enforces deterministic 10-second escalation intervals.
+ * Uses ONLY nextEscalationAt as the source of truth.
  */
 export class SLAWatchdogService {
   private timer: NodeJS.Timeout | null = null;
@@ -39,7 +37,7 @@ export class SLAWatchdogService {
     this.timer = setInterval(() => {
       this.tick().catch((e) => console.error('SLA watchdog tick failed:', e));
     }, WATCHDOG_INTERVAL_MS);
-    console.log(`⏱️  SLA watchdog started (${WATCHDOG_INTERVAL_MS}ms interval)`);
+    console.log(`⏱️  SLA watchdog started (${WATCHDOG_INTERVAL_MS}ms interval, SLA=${SLA_MS}ms)`);
   }
 
   stop() {
@@ -54,185 +52,145 @@ export class SLAWatchdogService {
   async tick(): Promise<{ scanned: number; escalated: number; updatedIds: string[] }> {
     if (this.running) return { scanned: 0, escalated: 0, updatedIds: [] };
     this.running = true;
-    console.log(`[SLA WATCHDOG] Tick at ${new Date().toISOString()}`);
+
+    const now = new Date();
+    const nowTs = admin.firestore.Timestamp.fromDate(now);
+    const updatedIds: string[] = [];
+
+    console.log(`[SLA WATCHDOG] Tick at ${now.toISOString()}`);
+
     try {
       const db = admin.firestore();
-      const now = new Date();
-      const nowTs = admin.firestore.Timestamp.fromDate(now);
 
-      // Query by status first (cheap index), filter by deadline in memory for compatibility.
+      // Find complaints that need escalation (nextEscalationAt <= now and not resolved)
       const snap = await db
         .collection('complaints')
-        .where('status', 'in', [...ACTIVE_STATUSES])
-        .orderBy('updatedAt', 'desc')
-        .limit(250)
+        .where('status', '!=', 'resolved')
+        .where('nextEscalationAt', '<=', nowTs)
+        .orderBy('nextEscalationAt', 'asc')
+        .limit(MAX_BATCH_SIZE)
         .get();
 
-      const complaints = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as any[];
-      const overdue = complaints.filter((c) => {
-        const deadline = c.slaDeadline?.toDate?.() || c.expectedResolutionTime?.toDate?.();
-        if (!deadline) return false;
-        return now.getTime() > deadline.getTime();
+      const complaints = snap.docs.map(doc => {
+        const data = doc.data() as Complaint;
+        return {
+          ...data,
+          id: doc.id,
+          nextEscalationAt: data.nextEscalationAt ? toDate(data.nextEscalationAt) : null,
+          createdAt: data.createdAt ? toDate(data.createdAt) : null,
+          updatedAt: data.updatedAt ? toDate(data.updatedAt) : null,
+        };
       });
 
-      const updatedIds: string[] = [];
-      const escalatedForAI: {
-        id: string;
-        department: string;
-        severity: string;
-        status: string;
-        elapsedSeconds: number;
-      }[] = [];
-      for (const raw of overdue) {
-        const complaint = (await firebaseService.getComplaint(raw.id)) as Complaint | null;
-        if (!complaint) continue;
+      // Process each complaint that needs escalation
+      for (const complaint of complaints) {
+        try {
+          const currentLevel = complaint.escalationLevel ?? 0;
+          let newLevel: 0 | 1 | 2 | 3;
+          let newStatus: string;
+          let message: string;
 
-        // CRITICAL: Skip resolved or already-escalated complaints (idempotency)
-        if (complaint.status === 'resolved' || complaint.status === 'escalated') continue;
+          // Determine new escalation level and status
+          if (currentLevel === 0) {
+            newLevel = 1;
+            newStatus = 'sla_warning';
+            message = 'SLA breached – Level 1 escalation';
+          } else if (currentLevel === 1) {
+            newLevel = 2;
+            newStatus = 'escalated';
+            message = 'SLA breached – Level 2 escalation';
+          } else if (currentLevel === 2) {
+            newLevel = 3;
+            newStatus = 'escalated';
+            message = 'SLA breached – Level 3 escalation (final warning)';
+          } else {
+            newLevel = 3;
+            newStatus = 'resolved';
+            message = 'Complaint auto-resolved after final escalation';
+          }
 
-        const deadline = getDeadline(complaint);
-        const nowMs = now.getTime();
-        const slaMs = deadline.getTime();
+          // 🔥 Next escalation is ALWAYS now + 10 seconds (unless resolved)
+          const nextEscalationAt = newStatus !== 'resolved'
+            ? new Date(now.getTime() + SLA_MS)
+            : null;
 
-        // Double-check SLA breach with correct comparison
-        if (nowMs <= slaMs) continue;
+          // Prepare update data - NO legacy fields
+          const updateData: any = {
+            escalationLevel: newLevel,
+            status: newStatus,
+            updatedAt: now,
+            nextEscalationAt: nextEscalationAt ? toFirestoreDate(nextEscalationAt) : null,
+          };
 
-        const oldStatus = complaint.status;
-        let newStatus: string;
-        let newLevel: 0 | 1 | 2 | 3;
-        let message: string;
+          console.log(`[SLA] Complaint ${complaint.id} - Level ${currentLevel} → ${newLevel} (${newStatus}), next: ${nextEscalationAt?.toISOString() ?? 'N/A'}`);
 
-        // STRICT one-way status transitions (idempotent)
-        if (oldStatus === 'analyzed' || oldStatus === 'in_progress' || oldStatus === 'submitted') {
-          newStatus = 'sla_warning';
-          newLevel = 1;
-          message = 'SLA breached – warning issued';
-        } else if (oldStatus === 'sla_warning') {
-          newStatus = 'escalated';
-          newLevel = 2;
-          message = 'SLA escalated to level 2';
-        } else {
-          // No further transitions (idempotency critical)
-          continue;
+          // Perform atomic update
+          await db.runTransaction(async (transaction) => {
+            const doc = await transaction.get(db.collection('complaints').doc(complaint.id));
+            if (!doc.exists) return;
+
+            const currentData = doc.data() as Complaint;
+            if (currentData.status === 'resolved') return;
+
+            // Update the document
+            transaction.update(db.collection('complaints').doc(complaint.id), updateData);
+
+            // Add timeline event
+            const timelineEvent = {
+              type: 'system' as const,
+              action: newStatus === 'resolved' ? 'resolved' : 'escalated',
+              message,
+              timestamp: now,
+            };
+            transaction.update(db.collection('complaints').doc(complaint.id), {
+              timeline: admin.firestore.FieldValue.arrayUnion(timelineEvent)
+            });
+
+            // Add audit log entry
+            const auditEntry = {
+              timestamp: nowTs,
+              action: newStatus === 'resolved'
+                ? 'Auto-resolved after final escalation'
+                : `Escalated to level ${newLevel}`,
+              actor: 'system' as const,
+              details: {
+                previousLevel: currentLevel,
+                newLevel,
+                previousStatus: currentData.status,
+                newStatus,
+                nextEscalationAt: updateData.nextEscalationAt
+              }
+            };
+            transaction.update(db.collection('complaints').doc(complaint.id), {
+              auditLog: admin.firestore.FieldValue.arrayUnion(auditEntry)
+            });
+          });
+
+          console.log(`[SLA] ✅ ${complaint.id}: Level ${currentLevel} → ${newLevel} (${newStatus})`);
+          updatedIds.push(complaint.id);
+
+        } catch (error: any) {
+          if (error.code === 'RESOURCE_EXHAUSTED' || error.code === 8) {
+            console.warn(`[SLA] Quota exceeded processing ${complaint.id}, will retry next tick`);
+            break;
+          }
+          console.error(`[SLA] Error processing ${complaint.id}:`, error);
         }
-
-        const elapsedSeconds = Math.max(
-          1,
-          Math.round((now.getTime() - complaint.createdAt.getTime()) / 1000)
-        );
-
-        const demoSeconds = Number(process.env.DEMO_SLA_SECONDS ?? '10');
-        const extensionMs =
-          demoSeconds > 0 ? demoSeconds * 1000 : 24 * 60 * 60 * 1000;
-        const newDeadline = new Date(now.getTime() + extensionMs);
-
-        // Atomic Firestore update
-        await firebaseService.updateComplaintFields(complaint.id, {
-          escalationLevel: newLevel,
-          status: newStatus as any,
-          updatedAt: now,
-          slaDeadline: newDeadline,
-          expectedResolutionTime: newDeadline,
-        });
-
-        // Write timeline event ONLY when status changes (prevents quota exhaustion)
-        await firebaseService.appendTimelineEvent(complaint.id, {
-          type: 'system',
-          action: newStatus === 'sla_warning' ? 'sla_warning' : 'escalated',
-          message,
-          timestamp: now,
-        });
-
-        // Also append audit entry
-        await db.collection('complaints').doc(complaint.id).update({
-          auditLog: admin.firestore.FieldValue.arrayUnion({
-            timestamp: nowTs,
-            action: newStatus === 'sla_warning' ? 'SLA warning issued' : `Escalated to level ${newLevel}`,
-            actor: 'system',
-            details: { 
-              oldStatus, 
-              newStatus, 
-              prevLevel: complaint.escalationLevel ?? 0, 
-              newLevel, 
-              previousDeadline: admin.firestore.Timestamp.fromDate(deadline), 
-              newDeadline: admin.firestore.Timestamp.fromDate(newDeadline) 
-            },
-          }),
-        });
-
-        console.log(`[SLA] ${complaint.id}: ${oldStatus} → ${newStatus}`);
-        updatedIds.push(complaint.id);
-        escalatedForAI.push({
-          id: complaint.id,
-          department: complaint.department ?? complaint.assignedDepartment,
-          severity: complaint.severity,
-          status: newStatus,
-          elapsedSeconds,
-        });
       }
 
-      if (updatedIds.length) {
-        console.log(
-          `🚨 SLA watchdog updated ${updatedIds.length} complaint(s): ${updatedIds.join(', ')}`
-        );
+      if (updatedIds.length > 0) {
+        console.log(`🚨 SLA watchdog processed ${updatedIds.length} complaint(s): ${updatedIds.join(', ')}`);
       }
 
-      // Fire-and-forget advisory explanations; escalation already enforced.
-      if (escalatedForAI.length) {
-        void this.addEscalationExplanations(escalatedForAI).catch((e) =>
-          console.error('Failed to add AI escalation justifications:', e)
-        );
-      }
-
-      return { scanned: snap.size, escalated: updatedIds.length, updatedIds };
+      return {
+        scanned: snap.size,
+        escalated: updatedIds.length,
+        updatedIds
+      };
     } finally {
       this.running = false;
-    }
-  }
-
-  /**
-   * Advisory Gemini explanations for already-escalated complaints.
-   * Not part of the critical path; failures fall back to deterministic messaging.
-   */
-  private async addEscalationExplanations(
-    escalations: {
-      id: string;
-      department: string;
-      severity: string;
-      status: string;
-      elapsedSeconds: number;
-    }[]
-  ): Promise<void> {
-    for (const esc of escalations) {
-      try {
-        const justification = await geminiService.explainEscalation({
-          department: esc.department,
-          severity: esc.severity,
-          elapsedSeconds: esc.elapsedSeconds,
-          status: esc.status,
-        });
-
-        const message = justification
-          ? `AI justification: ${justification}`
-          : 'System escalation enforced due to SLA breach.';
-
-        await firebaseService.appendTimelineEvent(esc.id, {
-          type: 'system',
-          action: 'ai_escalation_justification',
-          message,
-          timestamp: new Date(),
-        });
-      } catch {
-        await firebaseService.appendTimelineEvent(esc.id, {
-          type: 'system',
-          action: 'ai_escalation_justification_failed',
-          message: 'System escalation enforced due to SLA breach. AI justification unavailable.',
-          timestamp: new Date(),
-        });
-      }
     }
   }
 }
 
 export const slaWatchdogService = new SLAWatchdogService();
-

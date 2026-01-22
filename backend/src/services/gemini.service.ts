@@ -122,8 +122,7 @@ Analyze this image and determine:
 2. category: Type of issue. Must be one of: pothole, garbage, streetlight, drainage, water_leak, road_damage, public_property, illegal_dumping, traffic_sign, sidewalk, other
 3. severity: LOW | MEDIUM | HIGH | CRITICAL
 4. priority: 1-10 score (10 being most urgent)
-5. sla_hours: Recommended resolution time in hours
-6. confidence_score: 0.0-1.0 indicating how confident you are this is a REAL civic issue
+5. confidence_score: 0.0-1.0 indicating how confident you are this is a REAL civic issue
    - Below 0.2: Likely fake/spam/unrelated image (random photos, screenshots, memes, etc.)
    - 0.2-0.6: Uncertain, may need manual review (image unclear, partially relevant)
    - Above 0.6: Confident this is a real civic issue (clear photo of actual problem)
@@ -134,7 +133,6 @@ Return ONLY valid JSON in this exact format (no markdown, no commentary):
   "category": "string",
   "severity": "LOW|MEDIUM|HIGH|CRITICAL",
   "priority": 1-10,
-  "sla_hours": number,
   "confidence_score": 0.0-1.0
 }`;
 
@@ -183,9 +181,6 @@ Return ONLY valid JSON in this exact format (no markdown, no commentary):
       // Validate priority (1-10)
       const priority = Math.min(10, Math.max(1, Math.round(parsed.priority || 5)));
 
-      // Validate SLA hours
-      const suggestedSLA = Math.max(1, Math.round(parsed.sla_hours || 48));
-
       // Validate confidence score (0.0-1.0)
       const confidenceScore = Math.min(1, Math.max(0, parsed.confidence_score || 0.5));
 
@@ -204,7 +199,6 @@ Return ONLY valid JSON in this exact format (no markdown, no commentary):
         category: parsed.category || 'other',
         severity,
         priority,
-        suggestedSLA,
         confidenceScore,
         authenticityStatus,
       };

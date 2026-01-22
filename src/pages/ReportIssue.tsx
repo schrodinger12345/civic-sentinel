@@ -203,7 +203,10 @@ export default function ReportIssue() {
             title: 'Complaint submitted',
             description: 'AI analyzed your image and created the report. Watch the SLA countdown!',
         });
-        navigate('/dashboard/citizen');
+        // Small delay to ensure Firestore has persisted the data
+        setTimeout(() => {
+            navigate('/dashboard/citizen');
+        }, 500);
     };
 
     const handleTryAgain = () => {
@@ -559,7 +562,14 @@ export default function ReportIssue() {
                                         <span className="text-xs text-warning uppercase flex items-center justify-center gap-1 mb-1">
                                             <Clock className="w-3 h-3" /> SLA
                                         </span>
-                                        <span className="text-lg font-bold text-warning">{result.slaHours}h</span>
+                                        <span className="text-lg font-bold text-warning">
+                                            {(() => {
+                                                if (!result.nextEscalationAt) return 'N/A';
+                                                const deadline = new Date(result.nextEscalationAt);
+                                                const secondsRemaining = Math.max(0, Math.floor((deadline.getTime() - Date.now()) / 1000));
+                                                return `${secondsRemaining}s`;
+                                            })()}
+                                        </span>
                                     </div>
                                 </div>
                             </div>

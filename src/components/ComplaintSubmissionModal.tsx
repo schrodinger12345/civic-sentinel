@@ -396,7 +396,14 @@ export function ComplaintSubmissionModal({
                   <div className="text-xs text-warning uppercase mb-1 flex items-center gap-1">
                     <Clock className="w-3 h-3" /> SLA
                   </div>
-                  <div className="text-sm font-semibold text-warning">{result.slaHours}h</div>
+                  <div className="text-sm font-semibold text-warning">
+                    {(() => {
+                      if (!result.nextEscalationAt) return 'N/A';
+                      const deadline = new Date(result.nextEscalationAt);
+                      const secondsRemaining = Math.max(0, Math.floor((deadline.getTime() - Date.now()) / 1000));
+                      return `${secondsRemaining}s`;
+                    })()}
+                  </div>
                 </div>
               </div>
 

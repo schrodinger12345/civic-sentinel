@@ -58,12 +58,16 @@ export default function OfficialDashboard() {
             .getOfficialAIBrief(userProfile.uid)
             .catch(() => ({ success: false, brief: '' } as { success: boolean; brief: string })),
         ]);
-        setComplaints(complaints);
+        // 🔥 DEFENSIVE: Always ensure we have an array
+        setComplaints(complaints ?? []);
         setStats(stats);
         if (aiBriefRes?.brief) {
           setAIBrief(aiBriefRes.brief);
         }
       } catch (error) {
+        console.error('Failed to load official data:', error);
+        // 🔥 DEFENSIVE: Set empty array on error to prevent crash
+        setComplaints([]);
         toast({
           title: 'Unable to load data',
           description: error instanceof Error ? error.message : 'Please try again.',
@@ -100,18 +104,22 @@ export default function OfficialDashboard() {
   }, [liveEscalated]);
 
   const filteredComplaints = useMemo(() => {
+    // 🔥 DEFENSIVE: Ensure we always work with an array
+    const safeComplaints = complaints ?? [];
     const term = search.toLowerCase();
-    if (!term) return complaints;
-    return complaints.filter((c) =>
+    if (!term) return safeComplaints;
+    return safeComplaints.filter((c) =>
       [c.description, c.issueType, c.assignedDepartment]
         .filter(Boolean)
-        .some((field) => field.toLowerCase().includes(term))
+        .some((field) => field?.toLowerCase().includes(term))
     );
   }, [complaints, search]);
 
   const statCards = useMemo(() => {
+    // 🔥 DEFENSIVE: Ensure we always work with an array
+    const safeComplaints = complaints ?? [];
     const assigned = stats?.byStatus.assigned ?? 0;
-    const dueToday = complaints.filter((c) => c.status !== 'resolved').length;
+    const dueToday = safeComplaints.filter((c) => c.status !== 'resolved').length;
     const resolved = stats?.byStatus.resolved ?? 0;
     const escalated = stats?.escalated ?? 0;
     return [
@@ -140,8 +148,14 @@ export default function OfficialDashboard() {
 
   const statusLabel = (status: Complaint['status']) => status.replace('_', ' ');
 
-  const getDeadline = (c: Complaint) =>
-    new Date((c.slaDeadline as any) ?? (c.expectedResolutionTime as any));
+  // 🔥 AGENTIC STATE MACHINE: Read nextEscalationAt directly, DO NOT compute
+  const getDeadline = (c: Complaint) => {
+    // Use authoritative nextEscalationAt field only
+    if (!c.nextEscalationAt) {
+      return null;
+    }
+    return new Date(c.nextEscalationAt);
+  };
 
   const formatRemaining = (ms: number) => {
     const sign = ms < 0 ? '-' : '';
@@ -396,7 +410,14 @@ export default function OfficialDashboard() {
                         <span>Status: {statusLabel(complaint.status)}</span>
                         <span>Dept: {complaint.assignedDepartment}</span>
                         <span>
-                          SLA remaining: {formatRemaining(getDeadline(complaint).getTime() - nowTick)}
+                          {(() => {
+                            const deadline = getDeadline(complaint);
+                            if (!deadline) {
+                              return 'SLA: N/A';
+                            }
+                            const remaining = deadline.getTime() - nowTick;
+                            return `SLA: ${formatRemaining(remaining)}`;
+                          })()}
                         </span>
                         <Button size="sm" variant="ghost" onClick={() => openTimeline(complaint)}>
                           View timeline
