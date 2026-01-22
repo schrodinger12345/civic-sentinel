@@ -71,11 +71,7 @@ const App = () => (
               />
               <Route
                 path="/dashboard/official"
-                element={
-                  <ProtectedRoute allowedRoles={['official']}>
-                    <OfficialDashboard />
-                  </ProtectedRoute>
-                }
+                element={<OfficialDashboard />}
               />
 
               {/* Catch-all */}

@@ -45,7 +45,7 @@ export default function GetStarted() {
       icon: Building2,
       title: 'Government Official',
       description: 'Access your dashboard to manage and resolve assigned civic issues.',
-      path: '/auth/official',
+      path: '/dashboard/official',
       gradient: 'from-amber-500/20 to-orange-500/20',
       iconColor: 'text-amber-400',
     },

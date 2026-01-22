@@ -131,6 +131,22 @@ export const api = {
     }
   },
 
+  /** Get ALL complaints from Firestore for official oversight */
+  getAllComplaints: async (): Promise<{ complaints: Complaint[] }> => {
+    try {
+      const data = await request<Complaint[] | { complaints?: Complaint[] }>(
+        `/complaints/all`
+      );
+      if (Array.isArray(data)) {
+        return { complaints: data };
+      }
+      return { complaints: data?.complaints ?? [] };
+    } catch (error) {
+      console.error('Failed to fetch all complaints:', error);
+      throw error;
+    }
+  },
+
   /** Get live stats for real-time escalation count (hackathon demo) */
   getLiveStats: () =>
     request<{

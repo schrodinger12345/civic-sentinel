@@ -336,28 +336,46 @@ router.post('/check-escalations', async (_req, res) => {
 
 /**
  * GET /api/complaints/all
- * List all complaints with live SLA status
+ * List all complaints with live SLA status for official oversight
  */
 router.get('/all', async (_req: Request, res: Response) => {
   try {
     const db = admin.firestore();
     const snap = await db.collection('complaints')
       .orderBy('createdAt', 'desc')
-      .limit(50)
+      .limit(500)
       .get();
 
     const now = Date.now();
     const complaints = snap.docs.map(doc => {
       const d = doc.data();
-      const nextEsc = d.nextEscalationAt?.toMillis?.() ?? now;
+      const nextEsc = toMillis(d.nextEscalationAt) ?? now;
       const secondsRemaining = Math.max(0, Math.round((nextEsc - now) / 1000));
+      const createdMs = toMillis(d.createdAt) ?? now;
 
       return {
         id: doc.id,
-        title: d.title || d.description?.slice(0, 50),
-        status: d.status,
-        escalationLevel: d.escalationLevel,
-        createdAt: d.createdAt?.toDate?.()?.toISOString(),
+        citizenId: d.citizenId || '',
+        citizenName: d.citizenName || 'Unknown',
+        citizenLocation: d.citizenLocation || 'Unknown Location',
+        title: d.title || d.description?.slice(0, 50) || 'Untitled',
+        description: d.description || '',
+        category: d.category || 'general',
+        severity: d.severity || 'medium',
+        priority: d.priority ?? 0,
+        status: d.status || 'submitted',
+        escalationLevel: d.escalationLevel || 0,
+        confidenceScore: d.confidenceScore ?? 0.5,
+        authenticityStatus: d.authenticityStatus || 'uncertain',
+        createdAt: d.createdAt?.toDate?.()?.toISOString() || new Date(createdMs).toISOString(),
+        updatedAt: d.updatedAt?.toDate?.()?.toISOString() || d.createdAt?.toDate?.()?.toISOString() || new Date(createdMs).toISOString(),
+        nextEscalationAt: d.nextEscalationAt?.toDate?.()?.toISOString() || new Date(nextEsc).toISOString(),
+        coordinates: d.coordinates || { latitude: 0, longitude: 0 },
+        imageBase64: d.imageBase64 || '',
+        assignedOfficialId: d.assignedOfficialId,
+        escalationHistory: d.escalationHistory || [],
+        auditLog: d.auditLog || [],
+        agentDecision: d.agentDecision,
         slaCountdown: {
           secondsRemaining,
           status: now >= nextEsc ? 'BREACHED' : 'ACTIVE',
@@ -369,7 +387,7 @@ router.get('/all', async (_req: Request, res: Response) => {
     res.json({ complaints, count: complaints.length });
   } catch (err) {
     console.error('List failed:', err);
-    res.status(500).json({ error: 'Failed to list complaints' });
+    res.json({ complaints: [], count: 0, error: err instanceof Error ? err.message : 'Failed to list complaints' });
   }
 });
 
