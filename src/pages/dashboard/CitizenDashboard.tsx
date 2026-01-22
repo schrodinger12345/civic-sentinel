@@ -20,9 +20,6 @@ import { Complaint, TimelineEvent } from '@/types/complaint';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { normalizeDate, formatDate, formatRelativeTime } from '@/lib/dateUtils';
-import { AgentModeToggle, useAgentMode } from '@/components/AgentModeToggle';
-import { AgentDecisionPanel } from '@/components/AgentDecisionPanel';
-import { LiveAgentConsole } from '@/components/LiveAgentConsole';
 
 export default function CitizenDashboard() {
   const { userProfile, logout } = useAuth();
@@ -38,7 +35,6 @@ export default function CitizenDashboard() {
   const [selected, setSelected] = useState<Complaint | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
-  const agentMode = useAgentMode();
 
   // Geolocation state
   const [coordinates, setCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -273,9 +269,6 @@ export default function CitizenDashboard() {
             <p className="text-muted-foreground mt-1">
               Track your complaints and report new issues.
             </p>
-            <div className="mt-3">
-              <AgentModeToggle />
-            </div>
           </div>
 
           <Button className="bg-primary hover:bg-primary/90 h-11" onClick={() => navigate('/report')}>
@@ -371,11 +364,6 @@ export default function CitizenDashboard() {
             </motion.div>
           ))}
         </div>
-
-        {/* Live Agent Console - visible when Agent Mode is ON */}
-        {agentMode && (
-          <LiveAgentConsole className="mb-8" />
-        )}
 
         {/* Recent Complaints */}
         <motion.div
@@ -500,15 +488,6 @@ export default function CitizenDashboard() {
                 Close
               </Button>
             </div>
-
-            {/* Agent Decision Panel - visible when Agent Mode is ON */}
-            {agentMode && (
-              <AgentDecisionPanel
-                decision={selected.agentDecision}
-                complaintDescription={selected.description}
-                className="mb-4"
-              />
-            )}
 
             {timelineLoading ? (
               <div className="py-8 text-center text-muted-foreground">Loading timeline...</div>

@@ -19,9 +19,6 @@ import { api } from '@/lib/api';
 import { Complaint, OfficialStats, TimelineEvent } from '@/types/complaint';
 import { useToast } from '@/hooks/use-toast';
 import { normalizeDate, formatDate } from '@/lib/dateUtils';
-import { AgentModeToggle, useAgentMode } from '@/components/AgentModeToggle';
-import { AgentDecisionPanel } from '@/components/AgentDecisionPanel';
-import { LiveAgentConsole } from '@/components/LiveAgentConsole';
 
 export default function OfficialDashboard() {
   const { userProfile, logout } = useAuth();
@@ -41,7 +38,6 @@ export default function OfficialDashboard() {
   const [aiBrief, setAIBrief] = useState<string | null>(null);
   const [liveEscalated, setLiveEscalated] = useState(0);
   const [flash, setFlash] = useState(false);
-  const agentMode = useAgentMode();
 
   const handleLogout = async () => {
     await logout();
@@ -288,9 +284,6 @@ export default function OfficialDashboard() {
             <p className="text-muted-foreground mt-1">
               {userProfile?.jurisdiction || 'Your Jurisdiction'} • {new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
             </p>
-            <div className="mt-3">
-              <AgentModeToggle />
-            </div>
           </div>
 
           <div className="flex gap-3">
@@ -349,10 +342,6 @@ export default function OfficialDashboard() {
           ))}
         </div>
 
-        {/* Live Agent Console - visible when Agent Mode is ON */}
-        {agentMode && (
-          <LiveAgentConsole className="mb-8" />
-        )}
         {/* Performance Metrics */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -514,15 +503,6 @@ export default function OfficialDashboard() {
                 Close
               </Button>
             </div>
-
-            {/* Agent Decision Panel - visible when Agent Mode is ON */}
-            {agentMode && (
-              <AgentDecisionPanel
-                decision={selected.agentDecision}
-                complaintDescription={selected.description}
-                className="mb-4"
-              />
-            )}
 
             {timelineLoading ? (
               <div className="py-8 text-center text-muted-foreground">Loading timeline...</div>
