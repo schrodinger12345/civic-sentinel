@@ -14,6 +14,8 @@ import NotFound from "./pages/NotFound";
 // Auth Pages
 import AuthGateway from "./pages/AuthGateway";
 import RoleSelection from "./pages/RoleSelection";
+import GetStarted from "./pages/GetStarted";
+import OfficialAuth from "./pages/OfficialAuth";
 import CitizenOnboarding from "./pages/onboarding/CitizenOnboarding";
 import OfficialOnboarding from "./pages/onboarding/OfficialOnboarding";
 
@@ -36,7 +38,9 @@ const App = () => (
             <Route path="/system" element={<System />} />
             
             {/* Auth Routes */}
+            <Route path="/get-started" element={<GetStarted />} />
             <Route path="/auth" element={<AuthGateway />} />
+            <Route path="/auth/official" element={<OfficialAuth />} />
             <Route path="/role-selection" element={<RoleSelection />} />
             
             {/* Onboarding Routes */}
