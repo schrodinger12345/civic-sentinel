@@ -4,26 +4,24 @@
  */
 export function normalizeDate(input: any): Date | null {
   if (!input) return null;
-  
-  // Already a Date
+
   if (input instanceof Date) return input;
-  
-  // ISO string
+
   if (typeof input === 'string') {
-    const date = new Date(input);
-    return isNaN(date.getTime()) ? null : date;
+    const d = new Date(input);
+    return isNaN(d.getTime()) ? null : d;
   }
-  
-  // Firestore Timestamp object { seconds, nanoseconds }
+
+  // Firestore Timestamp { seconds, nanoseconds }
   if (typeof input === 'object' && typeof input.seconds === 'number') {
     return new Date(input.seconds * 1000);
   }
-  
-  // Unix timestamp (milliseconds)
-  if (typeof input === 'number') {
-    return new Date(input);
+
+  // Firestore Timestamp { _seconds, _nanoseconds }
+  if (typeof input === 'object' && typeof input._seconds === 'number') {
+    return new Date(input._seconds * 1000);
   }
-  
+
   return null;
 }
 
@@ -33,7 +31,7 @@ export function normalizeDate(input: any): Date | null {
 export function formatDate(input: any, fallback: string = 'Date unavailable'): string {
   const date = normalizeDate(input);
   if (!date) return fallback;
-  
+
   try {
     return date.toLocaleString();
   } catch {
@@ -47,14 +45,14 @@ export function formatDate(input: any, fallback: string = 'Date unavailable'): s
 export function formatRelativeTime(input: any): string {
   const date = normalizeDate(input);
   if (!date) return 'Unknown time';
-  
+
   const now = Date.now();
   const diff = now - date.getTime();
   const seconds = Math.floor(Math.abs(diff) / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
-  
+
   if (seconds < 60) return 'Just now';
   if (minutes < 60) return `${minutes}m ago`;
   if (hours < 24) return `${hours}h ago`;

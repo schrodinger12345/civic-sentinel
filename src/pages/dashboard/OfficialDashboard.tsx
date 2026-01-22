@@ -19,7 +19,7 @@ import {
   Brain,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { Complaint, OfficialStats, TimelineEvent } from '@/types/complaint';
+import { Complaint, TimelineEvent } from '@/types/complaint';
 import { useToast } from '@/hooks/use-toast';
 import { normalizeDate, formatDate } from '@/lib/dateUtils';
 import {
@@ -40,8 +40,7 @@ export default function OfficialDashboard() {
   const { toast } = useToast();
 
   const [complaints, setComplaints] = useState<Complaint[]>([]);
-  const [stats, setStats] = useState<OfficialStats | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -64,46 +63,34 @@ export default function OfficialDashboard() {
   };
 
   useEffect(() => {
-    const loadData = async () => {
-      // 🔥 Use existing profile OR create a minimal one for official override
-      const profile = userProfile || {
-        uid: 'official-' + Math.random().toString(36).substr(2, 9),
-        email: 'official@civic-sentinel.local',
-        displayName: 'Government Official',
-        photoURL: null,
-        role: 'official' as const,
-        onboardingComplete: true,
-        createdAt: new Date().toISOString(),
-        department: 'Civic Operations',
-      };
-      
-      setLoading(true);
-      setLoadError(null);
-      try {
-        const [{ complaints }, { stats }, aiBriefRes] = await Promise.all([
-          api.getAllComplaints(),
-          api.getOfficialStats(profile.uid),
-          api
-            .getOfficialAIBrief(profile.uid)
-            .catch(() => ({ success: false, brief: '' } as { success: boolean; brief: string })),
-        ]);
-        // 🔥 DEFENSIVE: Always ensure we have an array
-        setComplaints(complaints ?? []);
-        setStats(stats);
-        if (aiBriefRes?.brief) {
-          setAIBrief(aiBriefRes.brief);
-        }
-      } catch (error) {
-        console.error('Failed to load official data:', error);
-        // 🔥 DEFENSIVE: Preserve existing list on error, show banner
-        setLoadError(error instanceof Error ? error.message : 'Unable to connect to server.');
-      } finally {
-        setLoading(false);
-      }
-    };
+    setLoading(true);
+    setLoadError(null);
 
-    loadData();
-  }, [userProfile?.uid, toast]);
+    api
+      .getAllComplaints()
+      .then((res) => {
+        setComplaints(res.complaints ?? []);
+      })
+      .catch((err) => {
+        console.error('Failed to load complaints', err);
+        setComplaints([]);
+        setLoadError(err instanceof Error ? err.message : 'Unable to load complaints.');
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!userProfile?.uid) return;
+
+    api
+      .getOfficialAIBrief(userProfile.uid)
+      .then((res) => {
+        if (res?.brief) {
+          setAIBrief(res.brief);
+        }
+      })
+      .catch(() => { });
+  }, [userProfile?.uid]);
 
   useEffect(() => {
     const t = setInterval(() => setNowTick(Date.now()), 1000);
@@ -127,92 +114,103 @@ export default function OfficialDashboard() {
     return () => clearInterval(interval);
   }, [liveEscalated]);
 
-  const filteredComplaints = useMemo(() => {
-    // 🔥 LIVE PRIORITY QUEUE: All complaints, never resolved unless escalated
-    const safeComplaints = (complaints ?? []).filter((c) => c.status !== 'resolved' || c.escalationLevel > 0);
-    console.log('Official dashboard complaints:', safeComplaints.length);
-    
-    // Search filter (optional)
-    const term = search.toLowerCase();
-    const searchFiltered = !term
-      ? safeComplaints
-      : safeComplaints.filter((c) =>
-          [c.description, c.category, c.title]
-            .filter(Boolean)
-            .some((field) => field?.toLowerCase().includes(term))
-        );
+  // Authoritative deadline reader; keeps hoisted for use in memos
+  function getDeadline(c: Complaint) {
+    return normalizeDate(c.nextEscalationAt);
+  }
 
-    // PRIORITY QUEUE SORT: Urgency-based ordering for government operation
-    const priorityOrder: Record<string, number> = {
-      critical: 0,
-      high: 1,
-      medium: 2,
-      low: 3,
-    };
+  const priorityBucket = (p?: number) => {
+    if (p >= 9) return 0; // CRITICAL
+    if (p >= 7) return 1; // HIGH
+    if (p >= 4) return 2; // MEDIUM
+    return 3; // LOW
+  };
 
-    return searchFiltered.sort((a, b) => {
-      // 1️⃣ ESCALATION OVERRIDE: Escalated issues float to top within severity
-      const aEscalated = a.escalationLevel > 0 ? 0 : 1;
-      const bEscalated = b.escalationLevel > 0 ? 0 : 1;
-      if (aEscalated !== bEscalated) return aEscalated - bEscalated;
+  const sortedComplaints = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    const filtered = term
+      ? (complaints ?? []).filter((c) =>
+        [c.title, c.description, c.category]
+          .filter(Boolean)
+          .some((field) => field?.toLowerCase().includes(term))
+      )
+      : complaints ?? [];
 
-      // 2️⃣ PRIMARY: Severity (critical → high → medium → low)
-      const aSevIdx = priorityOrder[(a.severity as string)?.toLowerCase() ?? 'medium'] ?? 4;
-      const bSevIdx = priorityOrder[(b.severity as string)?.toLowerCase() ?? 'medium'] ?? 4;
-      if (aSevIdx !== bSevIdx) return aSevIdx - bSevIdx;
+    return [...filtered].sort((a, b) => {
+      const pbA = priorityBucket(a.priority);
+      const pbB = priorityBucket(b.priority);
+      if (pbA !== pbB) return pbA - pbB;
 
-      // 3️⃣ SECONDARY: Priority score (higher first)
-      if (a.priority !== b.priority) return (b.priority || 0) - (a.priority || 0);
+      if (a.escalationLevel !== b.escalationLevel) {
+        return b.escalationLevel - a.escalationLevel;
+      }
 
-      // 4️⃣ TERTIARY: Time to next escalation (soonest first)
-      const aDeadline = getDeadline(a)?.getTime() ?? Infinity;
-      const bDeadline = getDeadline(b)?.getTime() ?? Infinity;
-      if (aDeadline !== bDeadline) return aDeadline - bDeadline;
-
-      // 5️⃣ FALLBACK: Creation order (older first = more time has passed)
-      const aCreated = normalizeDate(a.createdAt)?.getTime() ?? Infinity;
-      const bCreated = normalizeDate(b.createdAt)?.getTime() ?? Infinity;
-      return aCreated - bCreated;
+      const da = normalizeDate(a.createdAt)?.getTime() ?? 0;
+      const db = normalizeDate(b.createdAt)?.getTime() ?? 0;
+      return da - db;
     });
-  }, [complaints, search, nowTick]);
+  }, [complaints, search]);
 
   const statCards = useMemo(() => {
     // 🔥 DEFENSIVE: Ensure we always work with an array
     const safeComplaints = complaints ?? [];
-    const assigned = stats?.byStatus.assigned ?? 0;
-    const dueToday = safeComplaints.filter((c) => c.status !== 'resolved').length;
-    const resolved = stats?.byStatus.resolved ?? 0;
-    const escalated = stats?.escalated ?? 0;
+    const now = Date.now();
+    const in24h = now + 24 * 60 * 60 * 1000;
+
+    // 🔥 Computed from REAL complaints data - no more relying on separate stats endpoint
+    const assigned = safeComplaints.length;
+    const dueToday = safeComplaints.filter((c) => {
+      if (c.status === 'resolved') return false;
+      const deadline = normalizeDate(c.nextEscalationAt);
+      return deadline && deadline.getTime() < in24h;
+    }).length;
+    const resolved = safeComplaints.filter((c) => c.status === 'resolved').length;
+    const escalated = safeComplaints.filter((c) => c.escalationLevel > 0).length;
     return [
       { label: 'Assigned Issues', value: assigned, icon: FileText, color: 'primary' },
       { label: 'Due Today', value: dueToday, icon: Clock, color: 'warning' },
       { label: 'Resolved', value: resolved, icon: CheckCircle2, color: 'success' },
       { label: 'Escalated', value: escalated, icon: AlertTriangle, color: 'destructive' },
     ];
-  }, [stats, complaints]);
+  }, [complaints]);
 
-  const performanceMetrics = useMemo(
-    () => {
-      const getValue = (val: number | undefined) => (val !== undefined ? val : null);
-      return [
-        {
-          label: 'Avg. Resolution Time',
-          value: stats?.averageResolutionTime
-            ? `${stats.averageResolutionTime}h`
-            : 'Insufficient data (AI will adapt as usage grows)',
-        },
-        {
-          label: 'SLA Compliance',
-          value: stats?.slaCompliance !== undefined ? `${stats.slaCompliance}%` : 'Insufficient data (AI will adapt as usage grows)',
-        },
-        {
-          label: 'Escalation Rate',
-          value: stats?.escalated !== undefined ? `${stats.escalated} active` : 'Insufficient data (AI will adapt as usage grows)',
-        },
-      ];
-    },
-    [stats]
-  );
+  const performanceMetrics = useMemo(() => {
+    const resolved = (complaints ?? []).filter((c) => c.status === 'resolved');
+    const resolutionDurations = resolved
+      .map((c) => {
+        const created = normalizeDate(c.createdAt)?.getTime();
+        const updated = normalizeDate(c.updatedAt)?.getTime();
+        return created && updated ? updated - created : null;
+      })
+      .filter((d): d is number => d !== null);
+
+    const avgResolutionHours = resolutionDurations.length
+      ? resolutionDurations.reduce((sum, d) => sum + d, 0) / resolutionDurations.length / (1000 * 60 * 60)
+      : null;
+
+    const total = complaints.length;
+    const compliantCount = (complaints ?? []).filter((c) => c.escalationLevel === 0).length;
+    const slaCompliance = total ? Math.round((compliantCount / total) * 100) : null;
+
+    const escalatedActive = (complaints ?? []).filter((c) => c.escalationLevel > 0).length;
+
+    return [
+      {
+        label: 'Avg. Resolution Time',
+        value: avgResolutionHours !== null
+          ? `${avgResolutionHours.toFixed(1)}h`
+          : 'Insufficient data (computed from history)',
+      },
+      {
+        label: 'SLA Compliance',
+        value: slaCompliance !== null ? `${slaCompliance}%` : 'Insufficient data (computed from escalation levels)',
+      },
+      {
+        label: 'Escalation Rate',
+        value: `${escalatedActive} active`,
+      },
+    ];
+  }, [complaints]);
 
   // AI Priority Brief: Computed from existing data, no backend changes
   const aiPriorityBrief = useMemo(() => {
@@ -257,12 +255,6 @@ export default function OfficialDashboard() {
   };
 
   const statusLabel = (status: Complaint['status']) => status.replace('_', ' ');
-
-  // 🔥 AGENTIC STATE MACHINE: Read nextEscalationAt directly, DO NOT compute
-  const getDeadline = (c: Complaint) => {
-    // Use authoritative nextEscalationAt field only
-    return normalizeDate(c.nextEscalationAt);
-  };
 
   const getEscalationColor = (level: number) => {
     if (level === 0) return 'text-muted-foreground';
@@ -463,8 +455,8 @@ export default function OfficialDashboard() {
                   {loadError} Showing cached data. Click refresh to retry.
                 </p>
               </div>
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 size="sm"
                 onClick={() => {
                   setLoadError(null);
@@ -590,9 +582,11 @@ export default function OfficialDashboard() {
             </div>
           </div>
 
-          {loading ? (
+          {loading && (
             <div className="py-12 text-center text-muted-foreground">Loading assigned issues...</div>
-          ) : filteredComplaints.length === 0 ? (
+          )}
+
+          {!loading && sortedComplaints.length === 0 && (
             <div className="py-16 text-center">
               <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white/5 flex items-center justify-center">
                 <FileText className="w-8 h-8 text-muted-foreground" />
@@ -602,129 +596,130 @@ export default function OfficialDashboard() {
                 When citizens report issues in your jurisdiction, they will appear here for resolution.
               </p>
             </div>
-          ) : (
+          )}
+
+          {!loading && sortedComplaints.length > 0 && (
             <div className="space-y-4">
-              {filteredComplaints.map((complaint, idx) => {
+              {sortedComplaints.map((complaint, idx) => {
                 const isEscalated = complaint.escalationLevel > 0;
                 const deadline = getDeadline(complaint);
                 const timeRemaining = deadline ? deadline.getTime() - nowTick : null;
                 const isCritical = timeRemaining && timeRemaining < 5000; // Red hot if < 5s
-                
+
                 return (
                   <motion.div
                     key={complaint.id}
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: idx * 0.05 }}
-                    className={`glass-panel p-4 transition-all ${
-                      isEscalated
-                        ? 'border-2 border-destructive/50 shadow-lg shadow-destructive/20 bg-destructive/5'
-                        : isCritical
+                    className={`glass-panel p-4 transition-all ${isEscalated
+                      ? 'border-2 border-destructive/50 shadow-lg shadow-destructive/20 bg-destructive/5'
+                      : isCritical
                         ? 'border border-warning/50 shadow-md shadow-warning/10'
                         : 'border border-white/10'
-                    }`}
+                      }`}
                   >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold capitalize">{complaint.category}</span>
-                        <span className={`text-xs font-medium uppercase ${severityColor(complaint.severity)}`}>
-                          {complaint.severity}
-                        </span>
-                        {complaint.escalationLevel > 0 && (
-                          <motion.span
-                            key={`escalation-${complaint.id}-${complaint.escalationLevel}`}
-                            initial={{ scale: 1.2, opacity: 0 }}
-                            animate={{ scale: 1, opacity: 1 }}
-                            className={`text-xs font-medium ${getEscalationColor(complaint.escalationLevel)}`}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold capitalize">{complaint.category}</span>
+                          <span className={`text-xs font-medium uppercase ${severityColor(complaint.severity)}`}>
+                            {complaint.severity}
+                          </span>
+                          {complaint.escalationLevel > 0 && (
+                            <motion.span
+                              key={`escalation-${complaint.id}-${complaint.escalationLevel}`}
+                              initial={{ scale: 1.2, opacity: 0 }}
+                              animate={{ scale: 1, opacity: 1 }}
+                              className={`text-xs font-medium ${getEscalationColor(complaint.escalationLevel)}`}
+                            >
+                              Escalated L{complaint.escalationLevel}
+                            </motion.span>
+                          )}
+                          {complaint.status === 'sla_warning' && (
+                            <span className="text-xs font-medium text-warning">SLA WARNING</span>
+                          )}
+                        </div>
+                        <p className="text-sm text-muted-foreground">{complaint.description}</p>
+                        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                          <span>Priority: {complaint.priority}/10</span>
+                          <span>Status: {statusLabel(complaint.status)}</span>
+                          <span>Category: {complaint.category}</span>
+                          <span>
+                            {complaint.confidenceScore && complaint.confidenceScore > 0
+                              ? `Confidence: ${(complaint.confidenceScore * 100).toFixed(0)}%`
+                              : 'Confidence: Unavailable (AI Offline)'}
+                          </span>
+                          <span
+                            className="text-primary font-semibold flex items-center gap-1 cursor-help"
+                            title="AI suggests. System enforces. No silent failures."
                           >
-                            Escalated L{complaint.escalationLevel}
-                          </motion.span>
-                        )}
-                        {complaint.status === 'sla_warning' && (
-                          <span className="text-xs font-medium text-warning">SLA WARNING</span>
-                        )}
-                      </div>
-                      <p className="text-sm text-muted-foreground">{complaint.description}</p>
-                      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                        <span>Priority: {complaint.priority}/10</span>
-                        <span>Status: {statusLabel(complaint.status)}</span>
-                        <span>Category: {complaint.category}</span>
-                        <span>
-                          {complaint.confidenceScore && complaint.confidenceScore > 0
-                            ? `Confidence: ${(complaint.confidenceScore * 100).toFixed(0)}%`
-                            : 'Confidence: Unavailable (AI Offline)'}
-                        </span>
-                        <span 
-                          className="text-primary font-semibold flex items-center gap-1 cursor-help" 
-                          title="AI suggests. System enforces. No silent failures."
-                        >
-                          🧠 AI Advisory
-                        </span>
-                        <span>
-                          {(() => {
-                            const deadline = getDeadline(complaint);
-                            if (!deadline) {
-                              return <span className="text-primary text-xs">Auto-Escalates every 10s (Demo)</span>;
-                            }
-                            const remaining = deadline.getTime() - nowTick;
-                            return (
-                              <span className={remaining < 0 ? 'text-destructive' : 'text-primary'}>
-                                Next escalation: {formatRemaining(remaining)}
-                              </span>
-                            );
-                          })()}
-                        </span>
-                        <Button size="sm" variant="ghost" onClick={() => openTimeline(complaint)}>
-                          View timeline
-                        </Button>
+                            🧠 AI Advisory
+                          </span>
+                          <span>
+                            {(() => {
+                              const deadline = getDeadline(complaint);
+                              if (!deadline) {
+                                return <span className="text-primary text-xs">Auto-Escalates every 10s (Demo)</span>;
+                              }
+                              const remaining = deadline.getTime() - nowTick;
+                              return (
+                                <span className={remaining < 0 ? 'text-destructive' : 'text-primary'}>
+                                  Next escalation: {formatRemaining(remaining)}
+                                </span>
+                              );
+                            })()}
+                          </span>
+                          <Button size="sm" variant="ghost" onClick={() => openTimeline(complaint)}>
+                            View timeline
+                          </Button>
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* AI Explainability */}
-                  {complaint.escalationLevel > 0 && (
-                    <Collapsible
-                      open={expandedIssues[complaint.id] || false}
-                      onOpenChange={() => toggleExpanded(complaint.id)}
-                      className="mt-4 pt-4 border-t border-white/10"
-                    >
-                      <CollapsibleTrigger asChild>
-                        <Button variant="ghost" size="sm" className="text-xs text-muted-foreground hover:text-primary h-8">
-                          <ChevronDown className={`w-3 h-3 mr-2 transition-transform ${expandedIssues[complaint.id] ? 'rotate-180' : ''}`} />
-                          Why was this escalated?
-                        </Button>
-                      </CollapsibleTrigger>
-                      <CollapsibleContent className="mt-3 space-y-2 text-xs">
-                        <div className="p-3 rounded-lg bg-white/5">
-                          <p className="text-muted-foreground mb-2"><strong>Escalation Journey:</strong></p>
-                          <p className="text-muted-foreground">• L0→L1: SLA approached</p>
-                        </div>
-                      </CollapsibleContent>
-                    </Collapsible>
-                  )}
-
-                  {/* AI Recommendation */}
-                  <div className="mt-4 pt-4 border-t border-white/10">
-                    <Button size="sm" variant="outline" onClick={() => setRecommendationModal({ isOpen: true, complaint })} className="text-xs">
-                      🔍 Ask AI for Resolution Suggestion
-                    </Button>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2 mt-3">
-                    {(['acknowledged', 'in_progress', 'on_hold', 'resolved'] as const).map((status) => (
-                      <Button
-                        key={status}
-                        size="sm"
-                        variant={complaint.status === status ? 'default' : 'outline'}
-                        disabled={updatingId === complaint.id}
-                        onClick={() => handleUpdateStatus(complaint.id, status)}
+                    {/* AI Explainability */}
+                    {complaint.escalationLevel > 0 && (
+                      <Collapsible
+                        open={expandedIssues[complaint.id] || false}
+                        onOpenChange={() => toggleExpanded(complaint.id)}
+                        className="mt-4 pt-4 border-t border-white/10"
                       >
-                        {statusLabel(status)}
+                        <CollapsibleTrigger asChild>
+                          <Button variant="ghost" size="sm" className="text-xs text-muted-foreground hover:text-primary h-8">
+                            <ChevronDown className={`w-3 h-3 mr-2 transition-transform ${expandedIssues[complaint.id] ? 'rotate-180' : ''}`} />
+                            Why was this escalated?
+                          </Button>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="mt-3 space-y-2 text-xs">
+                          <div className="p-3 rounded-lg bg-white/5">
+                            <p className="text-muted-foreground mb-2"><strong>Escalation Journey:</strong></p>
+                            <p className="text-muted-foreground">• L0→L1: SLA approached</p>
+                          </div>
+                        </CollapsibleContent>
+                      </Collapsible>
+                    )}
+
+                    {/* AI Recommendation */}
+                    <div className="mt-4 pt-4 border-t border-white/10">
+                      <Button size="sm" variant="outline" onClick={() => setRecommendationModal({ isOpen: true, complaint })} className="text-xs">
+                        🔍 Ask AI for Resolution Suggestion
                       </Button>
-                    ))}
-                  </div>
-                </motion.div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2 mt-3">
+                      {(['acknowledged', 'in_progress', 'on_hold', 'resolved'] as const).map((status) => (
+                        <Button
+                          key={status}
+                          size="sm"
+                          variant={complaint.status === status ? 'default' : 'outline'}
+                          disabled={updatingId === complaint.id}
+                          onClick={() => handleUpdateStatus(complaint.id, status)}
+                        >
+                          {statusLabel(status)}
+                        </Button>
+                      ))}
+                    </div>
+                  </motion.div>
                 );
               })}
             </div>
