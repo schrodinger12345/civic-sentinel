@@ -52,16 +52,10 @@ export const Navigation = () => {
         {/* Right Actions */}
         <div className="flex items-center gap-3">
           <Link 
-            to="/auth" 
-            className="btn-system-ghost text-sm hidden sm:block"
-          >
-            Log In
-          </Link>
-          <Link 
-            to="/auth" 
+            to="/get-started" 
             className="btn-system-primary text-sm"
           >
-            Sign Up
+            Get Started
           </Link>
         </div>
       </nav>
