@@ -11,6 +11,8 @@ export type ComplaintStatus =
 
 export type TimelineEventType = 'system' | 'official' | 'citizen';
 
+export type AuthenticityStatus = 'fake' | 'uncertain' | 'real';
+
 export interface TimelineEvent {
   type: TimelineEventType;
   action: string;
@@ -53,15 +55,30 @@ export interface Complaint {
   id: string;
   citizenId: string;
   citizenName: string;
-  citizenLocation: string;
-  description: string;
-  imageUrl?: string;
+  citizenLocation: string; // Human-readable location name
+  description: string; // AI-generated from image
+
+  // Image-based reporting fields
+  title: string; // User-provided title/subject
+  imageBase64: string; // Base64-encoded image
+  coordinates: {
+    latitude: number;
+    longitude: number;
+  };
+
   createdAt: string | Date;
   updatedAt: string | Date;
-  issueType: string;
+
+  // AI-determined fields
+  category: string; // Type of issue (pothole, garbage, streetlight, etc.)
   severity: 'low' | 'medium' | 'high' | 'critical';
-  assignedDepartment: string;
   priority: number;
+
+  // Authenticity scoring
+  confidenceScore: number; // 0.0 - 1.0
+  authenticityStatus: AuthenticityStatus; // fake/uncertain/real
+
+  // Status tracking
   status: ComplaintStatus;
   assignedOfficialId?: string;
   expectedResolutionTime: string | Date;

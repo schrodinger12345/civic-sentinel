@@ -20,18 +20,29 @@ export interface Complaint {
   id: string;
   citizenId: string;
   citizenName: string;
-  citizenLocation: string;
-  description: string;
-  imageUrl?: string;
+  citizenLocation: string; // Human-readable location name
+  description: string; // AI-generated from image
+
+  // Image-based reporting fields
+  title: string; // User-provided title/subject
+  imageBase64: string; // Base64-encoded image
+  coordinates: {
+    latitude: number;
+    longitude: number;
+  };
+
   createdAt: Date;
   updatedAt: Date;
-  
+
   // AI-determined fields
-  issueType: string;
+  category: string; // Type of issue (pothole, garbage, streetlight, etc.)
   severity: 'low' | 'medium' | 'high' | 'critical';
-  assignedDepartment: string;
   priority: number; // 1-10, higher = more urgent
-  
+
+  // Authenticity scoring
+  confidenceScore: number; // 0.0 - 1.0
+  authenticityStatus: AuthenticityStatus; // fake/uncertain/real
+
   // Status tracking
   status: ComplaintStatus;
   assignedOfficialId?: string;
@@ -41,7 +52,6 @@ export interface Complaint {
    * Hackathon-required (judge-facing) lifecycle fields.
    * Kept alongside legacy fields for backward compatibility with existing UI.
    */
-  department?: string;
   slaHours?: number;
   slaDeadline?: Date;
 
@@ -50,16 +60,16 @@ export interface Complaint {
    * Judges can see this to verify AI is actually called and drives behavior.
    */
   agentDecision?: AgentDecision;
-  
+
   // Escalation
   escalationLevel: 0 | 1 | 2 | 3; // 0=none, 1=supervisor, 2=dept head, 3=commissioner
   escalationHistory: EscalationEvent[];
-  
+
   // Audit trail
   auditLog: AuditEntry[];
 }
 
-export type ComplaintStatus = 
+export type ComplaintStatus =
   | 'submitted'
   | 'analyzed'
   | 'assigned'
@@ -84,14 +94,18 @@ export interface AuditEntry {
   details?: Record<string, any>;
 }
 
+// Authenticity classification based on confidence score
+export type AuthenticityStatus = 'fake' | 'uncertain' | 'real';
+
+// AI analysis result from Gemini Vision
 export interface GeminiAnalysisResult {
-  issueType: string;
+  generatedDescription: string;
+  category: string; // Type of issue (pothole, garbage, streetlight, etc.)
   severity: 'low' | 'medium' | 'high' | 'critical';
-  department: string;
-  priority: number;
-  reasoning: string;
+  priority: number; // 1-10 score
   suggestedSLA: number; // hours
-  publicImpact: string;
+  confidenceScore: number; // 0.0 - 1.0
+  authenticityStatus: AuthenticityStatus; // derived from confidenceScore
 }
 
 export type TimelineEventType = 'system' | 'official' | 'citizen';

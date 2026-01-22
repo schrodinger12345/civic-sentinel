@@ -13,6 +13,8 @@ import {
   User,
   Bell,
   Search,
+  MapPin,
+  AlertTriangle,
 } from 'lucide-react';
 import { Complaint, TimelineEvent } from '@/types/complaint';
 import { api } from '@/lib/api';
@@ -37,6 +39,52 @@ export default function CitizenDashboard() {
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
   const agentMode = useAgentMode();
+
+  // Geolocation state
+  const [coordinates, setCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [locationName, setLocationName] = useState<string>('');
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [locationLoading, setLocationLoading] = useState(true);
+
+  // Request geolocation on mount
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setLocationError('Geolocation is not supported by your browser');
+      setLocationLoading(false);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const coords = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        };
+        setCoordinates(coords);
+        setLocationError(null);
+
+        // Reverse geocode to get address
+        try {
+          const response = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.latitude}&lon=${coords.longitude}&zoom=18&addressdetails=1`,
+            { headers: { 'User-Agent': 'CivicFixAI/1.0' } }
+          );
+          const data = await response.json();
+          const address = data.display_name || `${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`;
+          setLocationName(address);
+        } catch {
+          setLocationName(`${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`);
+        }
+        setLocationLoading(false);
+      },
+      (error) => {
+        console.error('Geolocation error:', error);
+        setLocationError('Location access is required to submit reports. Please enable location permissions.');
+        setLocationLoading(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
+  }, []);
 
   // Handle report action from onboarding
   useEffect(() => {
@@ -80,7 +128,7 @@ export default function CitizenDashboard() {
     const term = search.toLowerCase();
     if (!term) return complaints;
     return complaints.filter((c) =>
-      [c.description, c.issueType, c.assignedDepartment]
+      [c.description, c.category, c.title]
         .filter(Boolean)
         .some((field) => field.toLowerCase().includes(term))
     );
@@ -211,6 +259,41 @@ export default function CitizenDashboard() {
           </Button>
         </div>
 
+        {/* Location Status Banner */}
+        {locationError && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6 p-4 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center gap-3"
+          >
+            <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-red-400">Location Required</p>
+              <p className="text-xs text-muted-foreground">{locationError}</p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => window.location.reload()}
+              className="text-xs"
+            >
+              Retry
+            </Button>
+          </motion.div>
+        )}
+
+        {coordinates && !locationError && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6 p-3 rounded-lg bg-green-500/10 border border-green-500/30 flex items-center gap-2"
+          >
+            <MapPin className="w-4 h-4 text-green-400" />
+            <span className="text-xs text-green-400 font-medium">Location Active:</span>
+            <span className="text-xs text-muted-foreground truncate flex-1">{locationName}</span>
+          </motion.div>
+        )}
+
         {/* Stats Grid */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           {stats.map((stat, index) => (
@@ -283,7 +366,8 @@ export default function CitizenDashboard() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold capitalize">{complaint.issueType}</span>
+                        <span className="text-sm font-semibold">{complaint.title}</span>
+                        <span className="text-xs font-medium capitalize text-primary">{complaint.category}</span>
                         <span className={`text-xs font-medium uppercase ${severityColor(complaint.severity)}`}>
                           {complaint.severity}
                         </span>
@@ -300,14 +384,14 @@ export default function CitizenDashboard() {
                         {complaint.description}
                       </p>
                       <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                        <span>Dept: {complaint.assignedDepartment}</span>
+                        <span>Category: {complaint.category}</span>
                         <span>Status: {statusLabel(complaint.status)}</span>
                         <span>Priority: {complaint.priority}/10</span>
+                        <span>Confidence: {(complaint.confidenceScore * 100).toFixed(0)}%</span>
                         <span>
                           SLA remaining: {formatRemaining(getDeadline(complaint).getTime() - nowTick)}
                         </span>
-                        <span className="text-primary font-semibold">AI: Gemini classified</span>
-                        <span className="text-warning">SLA watchdog enforces escalation</span>
+                        <span className="text-primary font-semibold">AI: Gemini Vision</span>
                       </div>
                     </div>
                   </div>
@@ -375,7 +459,8 @@ export default function CitizenDashboard() {
           onClose={() => setIsModalOpen(false)}
           citizenId={userProfile.uid}
           citizenName={userProfile.displayName || 'Citizen'}
-          citizenLocation={userProfile.location || userProfile.city || 'Unknown'}
+          coordinates={coordinates}
+          locationName={locationName || userProfile.location || userProfile.city || 'Unknown Location'}
           onSuccess={handleSubmitSuccess}
         />
       )}

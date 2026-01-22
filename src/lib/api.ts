@@ -23,11 +23,22 @@ export const api = {
   submitComplaint: (payload: {
     citizenId: string;
     citizenName: string;
-    citizenLocation: string;
-    description: string;
-    imageUrl?: string;
+    title: string;
+    imageBase64: string;
+    coordinates: {
+      latitude: number;
+      longitude: number;
+    };
+    locationName: string;
   }) =>
-    request<{ success: boolean; complaint: Complaint }>(`/complaints/submit`, {
+    request<{
+      success: boolean;
+      complaint?: Complaint;
+      rejected?: boolean;
+      reason?: string;
+      confidenceScore?: number;
+      message?: string;
+    }>(`/complaints/submit`, {
       method: 'POST',
       body: JSON.stringify(payload),
     }),

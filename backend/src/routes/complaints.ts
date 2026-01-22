@@ -11,9 +11,13 @@ const router = Router();
 interface SubmitComplaintRequest {
   citizenId: string;
   citizenName: string;
-  citizenLocation: string;
-  description: string;
-  imageUrl?: string;
+  title: string;
+  imageBase64: string;
+  coordinates: {
+    latitude: number;
+    longitude: number;
+  };
+  locationName: string;
 }
 
 interface UpdateProgressRequest {
@@ -29,31 +33,52 @@ interface UpdateStatusRequestV2 {
 
 /**
  * POST /api/complaints/submit
- * Submit a new complaint
+ * Submit a new complaint with image-based analysis
  */
 router.post('/submit', async (req: Request, res: Response) => {
   try {
-    const { citizenId, citizenName, citizenLocation, description, imageUrl } =
+    const { citizenId, citizenName, title, imageBase64, coordinates, locationName } =
       req.body as SubmitComplaintRequest;
 
-    if (!citizenId || !citizenName || !citizenLocation || !description) {
+    // Validate required fields
+    if (!citizenId || !citizenName || !title || !imageBase64 || !coordinates || !locationName) {
       return res.status(400).json({
         error: 'Missing required fields',
-        required: ['citizenId', 'citizenName', 'citizenLocation', 'description'],
+        required: ['citizenId', 'citizenName', 'title', 'imageBase64', 'coordinates', 'locationName'],
       });
     }
 
-    const complaint = await complaintService.submitComplaint(
+    // Validate coordinates
+    if (typeof coordinates.latitude !== 'number' || typeof coordinates.longitude !== 'number') {
+      return res.status(400).json({
+        error: 'Invalid coordinates',
+        details: 'coordinates must have numeric latitude and longitude',
+      });
+    }
+
+    const result = await complaintService.submitComplaint(
       citizenId,
       citizenName,
-      citizenLocation,
-      description,
-      imageUrl
+      title,
+      imageBase64,
+      coordinates,
+      locationName
     );
 
+    // Handle rejection (fake report)
+    if (!result.success) {
+      return res.status(200).json({
+        success: false,
+        rejected: true,
+        reason: result.reason,
+        confidenceScore: result.confidenceScore,
+      });
+    }
+
+    // Success - complaint created
     res.status(201).json({
       success: true,
-      complaint,
+      complaint: result.complaint,
       message: 'Complaint submitted successfully',
     });
   } catch (error) {
@@ -341,7 +366,7 @@ router.get('/official/:officialId/ai-brief', async (req: Request, res: Response)
         complaints: unresolved.map((c) => ({
           id: c.id,
           description: c.description,
-          department: c.department ?? c.assignedDepartment,
+          department: c.category, // Using category as department
           severity: c.severity,
           priority: c.priority,
           status: c.status,

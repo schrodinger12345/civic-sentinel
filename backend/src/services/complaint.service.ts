@@ -1,68 +1,86 @@
 import { v4 as uuidv4 } from 'uuid';
-import { Complaint, GeminiAnalysisResult, AgentDecision } from '../types/complaint.js';
+import { Complaint, GeminiAnalysisResult, AgentDecision, AuthenticityStatus } from '../types/complaint.js';
 import { geminiService } from './gemini.service.js';
 import { firebaseService } from './firebase.service.js';
 
+// Result type for submission - can be a complaint or a rejection
+export type SubmitComplaintResult =
+  | { success: true; complaint: Complaint }
+  | { success: false; rejected: true; reason: string; confidenceScore: number };
+
 export class ComplaintService {
   /**
-   * Submit a new complaint - main entry point
+   * Submit a new complaint with image-based analysis
+   * Returns rejection if confidence score < 0.2 (fake report)
    */
   async submitComplaint(
     citizenId: string,
     citizenName: string,
-    citizenLocation: string,
-    complaintText: string,
-    imageUrl?: string
-  ): Promise<Complaint> {
-    // Step 1: Analyze complaint with Gemini (with fallback for demo)
+    title: string,
+    imageBase64: string,
+    coordinates: { latitude: number; longitude: number },
+    locationName: string
+  ): Promise<SubmitComplaintResult> {
+    // Step 1: Analyze image with Gemini Vision
     let analysis: GeminiAnalysisResult;
     let usedAI = false;
 
     try {
-      const result = await geminiService.analyzeComplaint(complaintText, citizenLocation);
-      analysis = result;
+      analysis = await geminiService.analyzeImage(imageBase64, title, coordinates);
       usedAI = true;
-      console.log('✅ Gemini analysis successful:', analysis);
+      console.log('✅ Gemini Vision analysis successful:', analysis);
     } catch (error) {
-      console.error('❌ Gemini analysis failed:', error);
-      console.error('Complaint text was:', complaintText);
-      console.error('Location was:', citizenLocation);
-      // Fallback for dev/demo mode (matches previous behavior)
+      console.error('❌ Gemini Vision analysis failed:', error);
+      console.error('Title was:', title);
+      console.error('Coordinates were:', coordinates);
+
+      // Fallback for dev/demo mode - mark as uncertain
       analysis = {
-        issueType: 'other',
+        generatedDescription: `Issue reported: ${title}. Location: ${locationName}. (AI analysis unavailable)`,
+        category: 'other',
         severity: 'medium',
-        department: 'Public Works',
         priority: 5,
-        reasoning: 'Default analysis (Gemini unavailable)',
         suggestedSLA: 48,
-        publicImpact: 'Standard impact assessment',
+        confidenceScore: 0.5, // Uncertain when AI fails
+        authenticityStatus: 'uncertain',
       };
     }
 
-    // Step 2: Create complaint object
+    // Step 2: Check if report is fake (confidence < 0.2)
+    if (analysis.confidenceScore < 0.2) {
+      console.log('🚫 Report rejected as fake. Confidence:', analysis.confidenceScore);
+      return {
+        success: false,
+        rejected: true,
+        reason: 'Report flagged as potentially fake by AI analysis. Please submit a clear photo of an actual civic issue.',
+        confidenceScore: analysis.confidenceScore,
+      };
+    }
+
+    // Step 3: Create complaint object
     const now = new Date();
-    const demoSeconds = Number(process.env.DEMO_SLA_SECONDS ?? '10');
-    const baseMs =
-      demoSeconds > 0 ? demoSeconds * 1000 : analysis.suggestedSLA * 60 * 60 * 1000;
+    const demoSeconds = Number(process.env.DEMO_SLA_SECONDS ?? '0');
+    const baseMs = demoSeconds > 0
+      ? demoSeconds * 1000
+      : analysis.suggestedSLA * 60 * 60 * 1000;
     const expectedResolution = new Date(now.getTime() + baseMs);
 
     // Build agentDecision object - NEVER recomputed after submission
-    // This is the proof of AI agency for hackathon judges
     const agentDecision: AgentDecision = usedAI
       ? {
         source: 'gemini',
         raw: {
-          department: analysis.department,
+          department: analysis.category, // Using category as department for now
           severity: analysis.severity.toUpperCase(),
           priority: analysis.priority,
           sla_seconds: demoSeconds > 0 ? demoSeconds : analysis.suggestedSLA * 3600,
-          reasoning: analysis.reasoning,
+          reasoning: `AI confidence: ${(analysis.confidenceScore * 100).toFixed(1)}%`,
         },
         decidedAt: now,
       }
       : {
         source: 'fallback',
-        reason: 'Gemini unavailable',
+        reason: 'Gemini Vision unavailable',
         decidedAt: now,
       };
 
@@ -70,18 +88,25 @@ export class ComplaintService {
       id: uuidv4(),
       citizenId,
       citizenName,
-      citizenLocation,
-      description: complaintText,
-      imageUrl,
+      citizenLocation: locationName,
+      description: analysis.generatedDescription,
+
+      // Image-based fields
+      title,
+      imageBase64,
+      coordinates,
+
       createdAt: now,
       updatedAt: now,
 
-      // AI analysis results (derived from agentDecision)
-      issueType: analysis.issueType,
+      // AI analysis results
+      category: analysis.category,
       severity: analysis.severity,
-      assignedDepartment: analysis.department,
-      department: analysis.department,
       priority: analysis.priority,
+
+      // Authenticity scoring
+      confidenceScore: analysis.confidenceScore,
+      authenticityStatus: analysis.authenticityStatus,
 
       // Status
       status: 'analyzed',
@@ -100,25 +125,26 @@ export class ComplaintService {
       auditLog: [
         {
           timestamp: now,
-          action: `Complaint submitted and analyzed. Issue: ${analysis.issueType}, Severity: ${analysis.severity}, Department: ${analysis.department}`,
+          action: `Complaint submitted and analyzed. Category: ${analysis.category}, Severity: ${analysis.severity}, Confidence: ${(analysis.confidenceScore * 100).toFixed(1)}%`,
           actor: 'system',
           details: {
-            analysisReasoning: analysis.reasoning,
-            publicImpact: analysis.publicImpact,
+            title,
+            coordinates,
+            authenticityStatus: analysis.authenticityStatus,
           },
         },
       ],
     };
 
-    // Step 3: Save to Firebase
+    // Step 4: Save to Firebase
     await firebaseService.createComplaint(complaint);
 
-    // Step 4: Timeline AI advisory logging (explainability)
+    // Step 5: Timeline AI advisory logging (explainability)
     if (usedAI) {
-      const message = `AI suggested department=${analysis.department}, severity=${analysis.severity.toUpperCase()} (system accepted, confidence inferred from model).`;
+      const message = `AI analyzed image: category=${analysis.category}, severity=${analysis.severity.toUpperCase()}, confidence=${(analysis.confidenceScore * 100).toFixed(1)}%`;
       await firebaseService.appendTimelineEvent(complaint.id, {
         type: 'system',
-        action: 'ai_classification',
+        action: 'ai_image_analysis',
         message,
         timestamp: now,
       });
@@ -126,15 +152,12 @@ export class ComplaintService {
       await firebaseService.appendTimelineEvent(complaint.id, {
         type: 'system',
         action: 'ai_fallback',
-        message: 'AI suggestion unavailable or invalid. System applied fallback defaults.',
+        message: 'AI image analysis unavailable. System applied fallback defaults.',
         timestamp: now,
       });
     }
 
-    // TODO: Notify assigned department
-    // TODO: Trigger initial escalation check if needed
-
-    return complaint;
+    return { success: true, complaint };
   }
 
   /**

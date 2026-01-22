@@ -82,7 +82,7 @@ Return ONLY valid JSON in this exact schema (no markdown, no commentary):
     // Extract JSON from response - handle markdown code blocks
     let jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
     let jsonString = jsonMatch ? jsonMatch[1] : responseText;
-    
+
     // Fallback to simple brace matching if no code block
     if (!jsonMatch) {
       jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -100,68 +100,117 @@ Return ONLY valid JSON in this exact schema (no markdown, no commentary):
   }
 
   /**
-   * Backwards-compatible wrapper returning GeminiAnalysisResult used by the rest of the codebase.
-   * Applies clamping + sensible defaults if Gemini output is partial.
+   * Analyze a civic issue image using Gemini Vision API.
+   * Returns AI-generated description, category, priority, SLA, and confidence score.
    */
-  async analyzeComplaint(
-    complaintText: string,
-    location: string
+  async analyzeImage(
+    imageBase64: string,
+    title: string,
+    coordinates: { latitude: number; longitude: number }
   ): Promise<GeminiAnalysisResult> {
     try {
-      const suggestion = await this.suggestClassification(complaintText, location);
+      const model = getModel();
 
-      const severityRaw =
-        typeof suggestion.suggested_severity === 'string'
-          ? suggestion.suggested_severity.toLowerCase()
-          : 'medium';
+      const prompt = `You are an AI system for analyzing civic issue reports submitted by citizens.
+
+CONTEXT:
+- Title provided by citizen: "${title}"
+- GPS Coordinates: ${coordinates.latitude}, ${coordinates.longitude}
+
+Analyze this image and determine:
+1. description: Detailed description of the civic issue shown in the image (2-3 sentences)
+2. category: Type of issue. Must be one of: pothole, garbage, streetlight, drainage, water_leak, road_damage, public_property, illegal_dumping, traffic_sign, sidewalk, other
+3. severity: LOW | MEDIUM | HIGH | CRITICAL
+4. priority: 1-10 score (10 being most urgent)
+5. sla_hours: Recommended resolution time in hours
+6. confidence_score: 0.0-1.0 indicating how confident you are this is a REAL civic issue
+   - Below 0.2: Likely fake/spam/unrelated image (random photos, screenshots, memes, etc.)
+   - 0.2-0.6: Uncertain, may need manual review (image unclear, partially relevant)
+   - Above 0.6: Confident this is a real civic issue (clear photo of actual problem)
+
+Return ONLY valid JSON in this exact format (no markdown, no commentary):
+{
+  "description": "string",
+  "category": "string",
+  "severity": "LOW|MEDIUM|HIGH|CRITICAL",
+  "priority": 1-10,
+  "sla_hours": number,
+  "confidence_score": 0.0-1.0
+}`;
+
+      // Prepare image part for Gemini Vision
+      const imagePart = {
+        inlineData: {
+          data: imageBase64.replace(/^data:image\/\w+;base64,/, ''), // Remove data URL prefix if present
+          mimeType: 'image/jpeg', // Gemini accepts jpeg, png, webp
+        },
+      };
+
+      const result = await callWithTimeout(
+        model.generateContent([prompt, imagePart])
+      );
+      const responseText = result.response.text();
+
+      console.log('Raw Gemini Vision response:', responseText);
+
+      // Extract JSON from response - handle markdown code blocks
+      let jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      let jsonString = jsonMatch ? jsonMatch[1] : responseText;
+
+      // Fallback to simple brace matching if no code block
+      if (!jsonMatch) {
+        jsonMatch = responseText.match(/\{[\s\S]*\}/);
+        jsonString = jsonMatch ? jsonMatch[0] : responseText;
+      }
+
+      if (!jsonString || !jsonString.includes('{')) {
+        console.error('Gemini Vision response was not valid JSON:', responseText);
+        throw new Error('Invalid Gemini Vision response format');
+      }
+
+      const parsed = JSON.parse(jsonString);
+      console.log('Parsed Gemini Vision response:', parsed);
+
+      // Validate and normalize severity
+      const severityRaw = typeof parsed.severity === 'string'
+        ? parsed.severity.toLowerCase()
+        : 'medium';
       const allowedSeverities = ['low', 'medium', 'high', 'critical'] as const;
       const severity = allowedSeverities.includes(severityRaw as any)
         ? (severityRaw as (typeof allowedSeverities)[number])
         : 'medium';
 
-      const department =
-        typeof suggestion.suggested_department === 'string' && suggestion.suggested_department.trim()
-          ? suggestion.suggested_department.trim()
-          : 'Public Works';
+      // Validate priority (1-10)
+      const priority = Math.min(10, Math.max(1, Math.round(parsed.priority || 5)));
 
-      // Simple priority heuristic derived from severity; deterministic.
-      const priorityMap: Record<string, number> = {
-        low: 3,
-        medium: 5,
-        high: 8,
-        critical: 10,
-      };
+      // Validate SLA hours
+      const suggestedSLA = Math.max(1, Math.round(parsed.sla_hours || 48));
 
-      const priority = priorityMap[severity];
+      // Validate confidence score (0.0-1.0)
+      const confidenceScore = Math.min(1, Math.max(0, parsed.confidence_score || 0.5));
 
-      // SLA hours by severity – production-safe default; demo overrides via DEMO_SLA_SECONDS.
-      const slaBySeverity: Record<string, number> = {
-        low: 168, // 1 week
-        medium: 48,
-        high: 24,
-        critical: 6,
-      };
-
-      const suggestedSLA = slaBySeverity[severity] ?? 48;
-
-      const reasoning =
-        typeof suggestion.reasoning === 'string' && suggestion.reasoning.trim()
-          ? suggestion.reasoning.trim()
-          : 'AI classification completed';
+      // Determine authenticity status based on confidence score
+      let authenticityStatus: 'fake' | 'uncertain' | 'real';
+      if (confidenceScore < 0.2) {
+        authenticityStatus = 'fake';
+      } else if (confidenceScore < 0.6) {
+        authenticityStatus = 'uncertain';
+      } else {
+        authenticityStatus = 'real';
+      }
 
       return {
-        issueType: 'other',
+        generatedDescription: parsed.description || 'Unable to generate description',
+        category: parsed.category || 'other',
         severity,
-        department,
         priority,
-        reasoning,
         suggestedSLA,
-        publicImpact: 'Impact estimated from AI advisory classification',
+        confidenceScore,
+        authenticityStatus,
       };
     } catch (err) {
-      // CRITICAL: Re-throw so caller knows Gemini failed and can set usedAI = false
-      // This ensures epistemic honesty - fallback is never labeled as Gemini
-      console.error('Gemini analyzeComplaint failed:', err);
+      // CRITICAL: Re-throw so caller knows Gemini failed
+      console.error('Gemini analyzeImage failed:', err);
       throw err;
     }
   }
