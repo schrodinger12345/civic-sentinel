@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, useSearchParams, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
 import { AuthSpinner } from '@/components/auth/AuthSpinner';
@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
-import { Mail, Lock, Eye, EyeOff } from 'lucide-react';
+import { Mail, Lock, Eye, EyeOff, ArrowLeft, Users } from 'lucide-react';
 
 export default function AuthGateway() {
   const [isLogin, setIsLogin] = useState(true);
@@ -16,15 +16,28 @@ export default function AuthGateway() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const { loginWithEmail, signUpWithEmail, loginWithGoogle, userProfile } = useAuth();
+  const { loginWithEmail, signUpWithEmail, loginWithGoogle, userProfile, setUserRole } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
 
   const from = (location.state as any)?.from?.pathname || '/';
+  const isCitizenFlow = searchParams.get('role') === 'citizen';
 
   // Handle redirect after auth
-  const handleAuthSuccess = () => {
+  const handleAuthSuccess = async () => {
+    // If coming from citizen flow, set role automatically
+    if (isCitizenFlow) {
+      try {
+        await setUserRole('citizen');
+        navigate('/onboarding/citizen', { replace: true });
+        return;
+      } catch (error) {
+        console.error('Error setting citizen role:', error);
+      }
+    }
+    
     // Will be redirected by the routing logic based on profile state
     if (userProfile?.onboardingComplete) {
       const dashboard = userProfile.role === 'citizen' ? '/dashboard/citizen' : '/dashboard/official';
@@ -129,19 +142,32 @@ export default function AuthGateway() {
         transition={{ duration: 0.5 }}
         className="w-full max-w-md relative"
       >
+        {/* Back Button */}
+        <Link
+          to="/get-started"
+          className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mb-6 transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back to role selection
+        </Link>
+
         {/* Auth Card */}
         <div className="glass-panel p-8 md:p-10">
           {/* Logo */}
           <div className="text-center mb-8">
             <motion.div
-              className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 mb-4"
+              className={`inline-flex items-center justify-center w-16 h-16 rounded-2xl ${isCitizenFlow ? 'bg-cyan-500/10' : 'bg-primary/10'} mb-4`}
               animate={{ scale: [1, 1.05, 1] }}
               transition={{ duration: 3, repeat: Infinity }}
             >
-              <div className="w-8 h-8 rounded-lg bg-primary glow-primary" />
+              {isCitizenFlow ? (
+                <Users className="w-8 h-8 text-cyan-400" />
+              ) : (
+                <div className="w-8 h-8 rounded-lg bg-primary glow-primary" />
+              )}
             </motion.div>
             <h1 className="text-2xl font-bold text-foreground">
-              Welcome to <span className="text-primary">CivicFix AI</span>
+              {isCitizenFlow ? 'Citizen Portal' : <>Welcome to <span className="text-primary">CivicFix AI</span></>}
             </h1>
             <p className="text-sm text-muted-foreground mt-2">
               {isLogin ? 'Sign in to continue' : 'Create your account'}
