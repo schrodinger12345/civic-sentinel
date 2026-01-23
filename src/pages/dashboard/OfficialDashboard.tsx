@@ -43,6 +43,7 @@ export default function OfficialDashboard() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'resolved'>('all');
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState(Date.now());
   const [selected, setSelected] = useState<Complaint | null>(null);
@@ -136,7 +137,14 @@ export default function OfficialDashboard() {
       )
       : complaints ?? [];
 
-    return [...filtered].sort((a, b) => {
+    // Apply status filter
+    const statusFiltered = filtered.filter((c) => {
+      if (filterStatus === 'resolved') return c.status === 'resolved';
+      if (filterStatus === 'pending') return c.status !== 'resolved';
+      return true; // 'all'
+    });
+
+    return [...statusFiltered].sort((a, b) => {
       const pbA = priorityBucket(a.priority);
       const pbB = priorityBucket(b.priority);
       if (pbA !== pbB) return pbA - pbB;
@@ -149,7 +157,7 @@ export default function OfficialDashboard() {
       const db = normalizeDate(b.createdAt)?.getTime() ?? 0;
       return da - db;
     });
-  }, [complaints, search]);
+  }, [complaints, search, filterStatus]);
 
   const statCards = useMemo(() => {
     // 🔥 DEFENSIVE: Ensure we always work with an array
@@ -355,6 +363,30 @@ export default function OfficialDashboard() {
     } catch (error) {
       toast({
         title: 'Update failed',
+        description: error instanceof Error ? error.message : 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
+  const handleResolve = async (complaintId: string) => {
+    setUpdatingId(complaintId);
+    try {
+      await api.resolveComplaint(complaintId, 'Resolved by official');
+      setComplaints((prev) =>
+        prev.map((c) =>
+          c.id === complaintId ? { ...c, status: 'resolved', escalationLevel: 0 } : c
+        )
+      );
+      toast({
+        title: 'Issue resolved',
+        description: 'Marked as resolved and removed from escalation.',
+      });
+    } catch (error) {
+      toast({
+        title: 'Failed to resolve',
         description: error instanceof Error ? error.message : 'Please try again.',
         variant: 'destructive',
       });
@@ -582,6 +614,31 @@ export default function OfficialDashboard() {
             </div>
           </div>
 
+          {/* Filter buttons */}
+          <div className="flex gap-2 mb-6">
+            <Button
+              variant={filterStatus === 'all' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setFilterStatus('all')}
+            >
+              All Issues
+            </Button>
+            <Button
+              variant={filterStatus === 'pending' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setFilterStatus('pending')}
+            >
+              Pending
+            </Button>
+            <Button
+              variant={filterStatus === 'resolved' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setFilterStatus('resolved')}
+            >
+              Resolved
+            </Button>
+          </div>
+
           {loading && (
             <div className="py-12 text-center text-muted-foreground">Loading assigned issues...</div>
           )}
@@ -673,6 +730,16 @@ export default function OfficialDashboard() {
                           <Button size="sm" variant="ghost" onClick={() => openTimeline(complaint)}>
                             View timeline
                           </Button>
+                          {complaint.status !== 'resolved' && (
+                            <Button
+                              size="sm"
+                              variant="default"
+                              onClick={() => handleResolve(complaint.id)}
+                              disabled={updatingId === complaint.id}
+                            >
+                              {updatingId === complaint.id ? 'Resolving...' : 'Resolve'}
+                            </Button>
+                          )}
                         </div>
                       </div>
                     </div>

@@ -115,6 +115,12 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  resolveComplaint: (complaintId: string, note?: string) =>
+    request<{ success: boolean; message: string }>(`/complaints/${complaintId}/resolve`, {
+      method: 'PUT',
+      body: JSON.stringify({ note }),
+    }),
+
   getOfficialAIBrief: (officialId: string) =>
     request<{ success: boolean; brief: string }>(`/complaints/official/${officialId}/ai-brief`),
 

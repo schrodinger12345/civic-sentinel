@@ -105,12 +105,12 @@ export class SLAWatchdogService {
             message = 'SLA breached – Level 3 escalation (final warning)';
           } else {
             newLevel = 3;
-            newStatus = 'escalated';
-            message = 'Auto-escalated to L3; awaiting official resolution';
+            newStatus = 'resolved';
+            message = 'Complaint auto-resolved after final escalation';
           }
 
           // 🔥 Next escalation is ALWAYS now + 10 seconds (unless resolved)
-          const nextEscalationAt = newLevel < 3
+          const nextEscalationAt = newStatus !== 'resolved'
             ? new Date(now.getTime() + SLA_MS)
             : null;
 

@@ -506,5 +506,37 @@ router.get('/:id', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * PUT /api/complaints/:id/resolve
+ * Official marks complaint as resolved
+ */
+router.put('/:id/resolve', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { note } = req.body;
+
+    const db = admin.firestore();
+    const now = admin.firestore.Timestamp.now();
+
+    await db.collection('complaints').doc(id).update({
+      status: 'resolved',
+      escalationLevel: 0,
+      nextEscalationAt: null,
+      updatedAt: now,
+      timeline: admin.firestore.FieldValue.arrayUnion({
+        type: 'RESOLUTION',
+        timestamp: now,
+        note: note || 'Manually resolved by official',
+      }),
+    });
+
+    console.log(`✅ Official resolved complaint ${id}`);
+    res.json({ success: true, message: 'Complaint resolved' });
+  } catch (err: any) {
+    console.error('Resolve complaint failed:', err);
+    res.status(500).json({ error: 'Failed to resolve complaint', details: err.message });
+  }
+});
+
 export default router;
 

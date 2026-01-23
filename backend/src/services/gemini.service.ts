@@ -15,7 +15,7 @@ function getModel() {
     throw new Error('GEMINI_API_KEY is missing at runtime');
   }
   const genAI = new GoogleGenerativeAI(apiKey);
-  return genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+  return genAI.getGenerativeModel({ model: 'models/gemini-flash-latest' });
 }
 
 async function callWithTimeout<T>(promise: Promise<T>): Promise<T> {
