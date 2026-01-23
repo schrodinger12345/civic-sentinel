@@ -66,6 +66,12 @@ export interface Complaint {
     longitude: number;
   };
 
+  // Translation support
+  originalTitle?: string;
+  translatedTitle?: string;
+  language?: 'hindi' | 'marathi' | 'english' | 'other';
+  wasTranslated?: boolean;
+
   createdAt: string | Date;
   updatedAt: string | Date;
 

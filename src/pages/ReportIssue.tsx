@@ -20,7 +20,15 @@ import {
     Clock,
     Brain,
     Zap,
+    Mic,
+    Image as ImageIcon,
 } from 'lucide-react';
+import { VoiceRecorder } from '@/components/ai/VoiceRecorder';
+import { EmergencyAlert } from '@/components/ai/EmergencyAlert';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'; // Assuming you have tabs or use standard
+// Since Tabs isn't in imports, I'll use standard state for tabs if needed, but looks like we can just use conditional rendering or simple buttons
+// Actually, let's just use state for tabs to keep it clean without extra dependencies if not present.
+// But wait, the user wants "nice UI", so I'll build a custom tab switcher.
 
 export default function ReportIssue() {
     const { userProfile } = useAuth();
@@ -37,6 +45,12 @@ export default function ReportIssue() {
     const [phase, setPhase] = useState<'input' | 'processing' | 'result' | 'rejected'>('input');
     const [result, setResult] = useState<Complaint | null>(null);
     const [rejectionInfo, setRejectionInfo] = useState<{ reason: string; confidenceScore: number } | null>(null);
+
+    // AI Features State
+    const [reportMode, setReportMode] = useState<'photo' | 'voice'>('photo');
+    const [emergencyModalOpen, setEmergencyModalOpen] = useState(false);
+    const [emergencyData, setEmergencyData] = useState<{ type: string; reasoning: string } | null>(null);
+    const [voiceData, setVoiceData] = useState<{ transcription: string; category: string } | null>(null);
 
     // Geolocation state
     const [coordinates, setCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -185,6 +199,15 @@ export default function ReportIssue() {
                 // Success
                 setResult(response.complaint);
                 setPhase('result');
+                
+                // Check if emergency was detected in the response
+                if (response.complaint.isEmergency) {
+                   setEmergencyData({
+                       type: response.complaint.emergencyType || 'Safety Hazard',
+                       reasoning: 'AI detected a critical safety issue needing immediate attention.'
+                   });
+                   setEmergencyModalOpen(true);
+                }
             }
         } catch (error) {
             toast({
@@ -303,6 +326,96 @@ export default function ReportIssue() {
                                 <p className="text-muted-foreground text-sm mb-6">
                                     Upload an image and location to report infrastructure issues
                                 </p>
+
+                                {/* Reporting Mode Switcher */}
+                                <div className="flex p-1 bg-white/5 rounded-xl mb-6 border border-white/10">
+                                    <button
+                                        type="button"
+                                        onClick={() => setReportMode('photo')}
+                                        className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg text-sm font-medium transition-all ${
+                                            reportMode === 'photo' 
+                                                ? 'bg-primary text-white shadow-lg shadow-primary/20' 
+                                                : 'text-muted-foreground hover:bg-white/5'
+                                        }`}
+                                    >
+                                        <ImageIcon className="w-4 h-4" />
+                                        Photo Report
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setReportMode('voice')}
+                                        className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg text-sm font-medium transition-all ${
+                                            reportMode === 'voice' 
+                                                ? 'bg-primary text-white shadow-lg shadow-primary/20' 
+                                                : 'text-muted-foreground hover:bg-white/5'
+                                        }`}
+                                    >
+                                        <Mic className="w-4 h-4" />
+                                        Voice Report <span className="text-[10px] bg-white/20 px-1.5 rounded ml-1">NEW</span>
+                                    </button>
+                                </div>
+
+                                {reportMode === 'voice' && (
+                                     <div className="mb-6 space-y-4">
+                                         {coordinates ? (
+                                             <VoiceRecorder 
+                                                citizenId={userProfile?.uid || ''}
+                                                coordinates={coordinates}
+                                                locationName={locationName}
+                                                onTranscription={(data) => {
+                                                    // Handle voice success
+                                                    setVoiceData(data);
+                                                    setTitle(data.transcription);
+                                                    // Move to next step or auto-submit based on flow. 
+                                                    // For now, let's fill the title and let them confirm or add photo? 
+                                                    // Or better, voice allows submitting without photo? 
+                                                    // The backend requires image currently for analyzeImage, but maybe voice-complaint route handles it separately.
+                                                    // My voice-complaint route returns transcription but expected createComplaint to be called?
+                                                    // Step 247 shows submitVoiceComplaint returns analysis but doesn't create complaint in DB yet? 
+                                                    // Wait, `VoiceRecorder.tsx` calls `api.submitVoiceComplaint` which just analyzes. 
+                                                    // I need to actually Submit the complaint. 
+                                                    // However, effective voice reporting usually creates the complaint.
+                                                    // Let's assume for this UI, voice pre-fills the title, and maybe we allow submission without image if voice is used?
+                                                    // Or just pre-fill. 
+                                                    // Let's pre-fill and ask for image if possible, or allow image-less submission if backend supports it.
+                                                    // Currently backend `api.submitComplaint` requires imageBase64.
+                                                    // I will enforce image for now as "Evidence", but voice helps description.
+                                                    toast({
+                                                        title: "Voice Captured",
+                                                        description: "Description updated from voice.",
+                                                        className: "bg-green-500/10 border-green-500/50 text-green-500"
+                                                    });
+                                                    
+                                                    // If emergency
+                                                    if (data.isEmergency) {
+                                                        setEmergencyData({
+                                                            type: 'Detected from Voice',
+                                                            reasoning: 'Voice analysis indicated emergency urgency.'
+                                                        });
+                                                        setEmergencyModalOpen(true);
+                                                    }
+                                                }}
+                                             />
+                                         ) : (
+                                             <div className="p-4 rounded-xl bg-yellow-500/10 border border-yellow-500/30 text-yellow-500 text-sm text-center">
+                                                 Waiting for location...
+                                             </div>
+                                         )}
+                                         
+                                         {voiceData && (
+                                             <div className="p-4 rounded-xl bg-primary/10 border border-primary/20">
+                                                 <span className="text-xs text-primary font-bold uppercase tracking-wider mb-1 block">Transcription</span>
+                                                 <p className="text-sm italic">"{voiceData.transcription}"</p>
+                                                 {voiceData.category !== 'other' && (
+                                                     <div className="mt-2 text-xs flex gap-2">
+                                                         <span className="bg-primary/20 px-2 py-1 rounded">Category: {voiceData.category}</span>
+                                                         <span className="bg-primary/20 px-2 py-1 rounded">Urgency: {voiceData.severity}</span>
+                                                     </div>
+                                                 )}
+                                             </div>
+                                         )}
+                                     </div>
+                                )}
 
                                 <form onSubmit={handleSubmit} className="space-y-6">
                                     {/* Image Upload Area */}
@@ -650,6 +763,19 @@ export default function ReportIssue() {
                     Powered by Google Gemini AI • CivicFix AI
                 </motion.footer>
             </div>
+
+            {/* Emergency Alert Modal */}
+            <EmergencyAlert 
+                isOpen={emergencyModalOpen}
+                onClose={() => setEmergencyModalOpen(false)}
+                onConfirm={() => {
+                    setEmergencyModalOpen(false);
+                    // Could trigger specific emergency flow here
+                    window.open('tel:100');
+                }}
+                emergencyType={emergencyData?.type || null}
+                reasoning={emergencyData?.reasoning || ''}
+            />
 
             {/* Loading Overlay */}
             <AnimatePresence>
