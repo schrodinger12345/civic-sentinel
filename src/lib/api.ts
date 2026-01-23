@@ -115,10 +115,10 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  resolveComplaint: (complaintId: string, note?: string) =>
-    request<{ success: boolean; message: string }>(`/complaints/${complaintId}/resolve`, {
+  updateKanbanStatus: (complaintId: string, payload: { status: string; officialId?: string }) =>
+    request<{ success: boolean; complaint: Complaint }>(`/complaints/${complaintId}/kanban-status`, {
       method: 'PUT',
-      body: JSON.stringify({ note }),
+      body: JSON.stringify(payload),
     }),
 
   getOfficialAIBrief: (officialId: string) =>
@@ -154,5 +154,94 @@ export const api = {
       total: number;
       timestamp: string;
     }>(`/complaints/_debug/live-stats`),
+
+  /**
+   * 🤖 AI FEATURES
+   */
+
+  submitVoiceComplaint: (payload: { audioBase64: string; mimeType: string; citizenId: string; coordinates: { latitude: number; longitude: number }; locationName: string }) =>
+    request<{
+      success: boolean;
+      transcription: string;
+      category: string;
+      severity: string;
+      urgency: string;
+      isEmergency: boolean;
+      sentimentScore: number;
+      message: string;
+    }>('/ai/voice-complaint', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  detectDuplicate: (payload: { title: string; description: string; location: { lat: number; lng: number }; citizenId: string }) =>
+    request<{
+      success: boolean;
+      isDuplicate: boolean;
+      matchedComplaintId: string | null;
+      similarity: number;
+      reasoning: string;
+    }>('/ai/detect-duplicate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  verifyResolution: (payload: { complaintId: string; afterImageBase64: string }) =>
+    request<{
+      success: boolean;
+      isResolved: boolean;
+      confidenceScore: number;
+      reasoning: string;
+      remainingIssues: string[];
+    }>('/ai/verify-resolution', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  startCitizenChat: (payload: { conversation: Array<{ role: string; content: string }>; citizenId?: string; citizenName?: string }) =>
+    request<{
+      success: boolean;
+      response: string;
+      suggestedActions: string[];
+    }>('/ai/chat', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  detectEmergency: (text: string) =>
+    request<{
+      success: boolean;
+      isEmergency: boolean;
+      emergencyType: string | null;
+      urgencyLevel: 'IMMEDIATE' | 'URGENT' | 'STANDARD';
+      reasoning: string;
+    }>('/ai/detect-emergency', {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+
+  getDepartmentReport: (department: string) =>
+    request<{
+      success: boolean;
+      report: {
+        summary: string;
+        strengths: string[];
+        areasForImprovement: string[];
+        recommendations: string[];
+        performanceScore: number;
+      };
+    }>(`/ai/department-report/${department}`),
+
+  getPredictions: () =>
+    request<{
+      success: boolean;
+      predictions: Array<{
+        area: string;
+        issueType: string;
+        probability: number;
+        suggestedPreventiveAction: string;
+        estimatedTimeframe: string;
+      }>;
+    }>('/ai/predictions'),
 };
 

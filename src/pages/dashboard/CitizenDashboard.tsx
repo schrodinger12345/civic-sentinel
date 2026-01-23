@@ -20,6 +20,8 @@ import { Complaint, TimelineEvent } from '@/types/complaint';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { normalizeDate, formatDate, formatRelativeTime } from '@/lib/dateUtils';
+import { KanbanBoard } from '@/components/kanban/KanbanBoard';
+import { AiChatWidget } from '@/components/ai/AiChatWidget';
 
 export default function CitizenDashboard() {
   const { userProfile, logout } = useAuth();
@@ -90,36 +92,38 @@ export default function CitizenDashboard() {
   }, [searchParams, navigate]);
 
   useEffect(() => {
-    const fetchComplaints = async () => {
+    const fetchComplaints = async (isBackground = false) => {
       if (!userProfile?.uid) {
         console.log('🔍 No userProfile.uid, skipping fetch');
         return;
       }
-      console.log('🔍 Fetching complaints for citizenId:', userProfile.uid);
-      setLoading(true);
+      if (!isBackground) setLoading(true);
       try {
         const result = await api.getCitizenComplaints(userProfile.uid);
-        console.log('🔍 API response:', result);
-        console.log('🔍 Complaints array:', result?.complaints);
-        console.log('🔍 Complaints count:', result?.complaints?.length ?? 0);
         // 🔥 DEFENSIVE: Always ensure we have an array
         setComplaints(result?.complaints ?? []);
         setLoadError(null);
       } catch (error) {
         console.error('❌ Failed to fetch complaints:', error);
-        // 🔥 DEFENSIVE: Preserve current list if backend hiccups
-        toast({
-          title: 'Could not load complaints',
-          description: error instanceof Error ? error.message : 'Please try again.',
-          variant: 'destructive',
-        });
-        setLoadError(error instanceof Error ? error.message : 'Unable to load complaints');
+        // Only show toast error on initial load, not polling
+        if (!isBackground) {
+          toast({
+            title: 'Could not load complaints',
+            description: error instanceof Error ? error.message : 'Please try again.',
+            variant: 'destructive',
+          });
+          setLoadError(error instanceof Error ? error.message : 'Unable to load complaints');
+        }
       } finally {
-        setLoading(false);
+        if (!isBackground) setLoading(false);
       }
     };
 
     fetchComplaints();
+
+    // Poll for updates every 5 seconds (Citizen needs to see real-time officer moves)
+    const interval = setInterval(() => fetchComplaints(true), 5000);
+    return () => clearInterval(interval);
   }, [userProfile?.uid, toast]);
 
   useEffect(() => {
@@ -365,7 +369,7 @@ export default function CitizenDashboard() {
           ))}
         </div>
 
-        {/* Recent Complaints */}
+        {/* Complaint Board */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -373,7 +377,7 @@ export default function CitizenDashboard() {
           className="glass-panel p-6"
         >
           <div className="flex items-center justify-between mb-6">
-            <h2 className="text-lg font-semibold">Your Complaints</h2>
+            <h2 className="text-lg font-semibold">Your Complaint Board</h2>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input
@@ -387,85 +391,21 @@ export default function CitizenDashboard() {
           </div>
 
           {loading ? (
-            <div className="py-12 text-center text-muted-foreground">Loading complaints...</div>
-          ) : filteredComplaints.length === 0 ? (
-            <div className="py-16 text-center">
-              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white/5 flex items-center justify-center">
-                <FileText className="w-8 h-8 text-muted-foreground" />
-              </div>
-              <h3 className="text-lg font-medium mb-2">No complaints yet</h3>
-              <p className="text-sm text-muted-foreground mb-6 max-w-sm mx-auto">
-                Report your first civic issue and CivicFix AI will ensure it gets resolved.
-              </p>
-              <Button className="bg-primary hover:bg-primary/90" onClick={() => navigate('/report')}>
-                <Plus className="w-4 h-4 mr-2" />
-                Report an Issue
-              </Button>
-            </div>
+             <div className="py-12 text-center text-muted-foreground">Loading board...</div>
           ) : (
-            <div className="space-y-4">
-              {filteredComplaints.map((complaint) => (
-                <div
-                  key={complaint.id}
-                  className="glass-panel p-4 cursor-pointer hover:border-white/20 transition-colors"
-                  onClick={() => openTimeline(complaint)}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold">{complaint.title}</span>
-                        <span className="text-xs font-medium capitalize text-primary">{complaint.category}</span>
-                        <span className={`text-xs font-medium uppercase ${severityColor(complaint.severity)}`}>
-                          {complaint.severity}
-                        </span>
-                        {complaint.escalationLevel > 0 && (
-                          <motion.span
-                            initial={{ scale: 0.95 }}
-                            animate={{ scale: 1 }}
-                            className={`text-xs font-bold px-2 py-0.5 rounded ${getEscalationColor(complaint.escalationLevel)} bg-opacity-10`}
-                          >
-                            🚨 L{complaint.escalationLevel} Escalated
-                          </motion.span>
-                        )}
-                        {complaint.status === 'sla_warning' && (
-                          <span className="text-xs font-medium text-warning">SLA WARNING</span>
-                        )}
-                      </div>
-                      <p className="text-sm text-muted-foreground">
-                        {complaint.description}
-                      </p>
-                      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                        <span>Category: {complaint.category}</span>
-                        <span>Status: {statusLabel(complaint.status)}</span>
-                        <span>Priority: {complaint.priority}/10</span>
-                        <span>
-                          {complaint.confidenceScore && complaint.confidenceScore > 0
-                            ? `Confidence: ${(complaint.confidenceScore * 100).toFixed(0)}%`
-                            : 'Confidence: Unavailable (AI Offline)'}
-                        </span>
-                        {(() => {
-                          const deadline = getDeadline(complaint);
-                          if (!deadline) {
-                            return <span className="text-primary text-xs">Auto-Escalates every 10s (Demo)</span>;
-                          }
-                          const remaining = deadline.getTime() - nowTick;
-                          return (
-                            <span className={remaining < 0 ? 'text-destructive' : 'text-primary'}>
-                              Next escalation: {formatRemaining(remaining)}
-                            </span>
-                          );
-                        })()}
-                        <span 
-                          className="text-primary font-semibold flex items-center gap-1 cursor-help" 
-                          title="AI suggests. System enforces. No silent failures."
-                        >
-                          🧠 AI Advisory
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
+            <div className="min-h-[500px]">
+                <KanbanBoard
+                   complaints={filteredComplaints}
+                   onDragEnd={() => {}} // No-op for read-only
+                   onView={openTimeline}
+                   isDragEnabled={false} // READ-ONLY MODE
+                   showCitizenName={false}
+                   columnTitles={{
+                     todo: 'Submitted Complaints',
+                     in_progress: 'In Progress',
+                     done: 'Resolved'
+                   }}
+                />
             </div>
           )}
         </motion.div>
@@ -512,6 +452,9 @@ export default function CitizenDashboard() {
           </motion.div>
         )}
       </main>
+      
+      {/* AI Chat Widget */}
+      <AiChatWidget />
     </div>
   );
 }

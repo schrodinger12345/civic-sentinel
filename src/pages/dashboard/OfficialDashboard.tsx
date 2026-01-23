@@ -16,8 +16,12 @@ import {
   BarChart3,
   ChevronDown,
   AlertCircle,
+  AlertCircle,
   Brain,
+  ShieldCheck,
 } from 'lucide-react';
+import { PredictionWidget } from '@/components/ai/PredictionWidget';
+import { ResolutionVerifier } from '@/components/ai/ResolutionVerifier';
 import { api } from '@/lib/api';
 import { Complaint, TimelineEvent } from '@/types/complaint';
 import { useToast } from '@/hooks/use-toast';
@@ -33,6 +37,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
+import { KanbanBoard } from '@/components/kanban/KanbanBoard';
+import { DropResult } from '@hello-pangea/dnd';
 
 export default function OfficialDashboard() {
   const { userProfile, logout } = useAuth();
@@ -54,6 +60,10 @@ export default function OfficialDashboard() {
   const [flash, setFlash] = useState(false);
   const [expandedIssues, setExpandedIssues] = useState<Record<string, boolean>>({});
   const [recommendationModal, setRecommendationModal] = useState<{ isOpen: boolean; complaint: Complaint | null }>({
+    isOpen: false,
+    complaint: null,
+  });
+  const [verifyModal, setVerifyModal] = useState<{ isOpen: boolean; complaint: Complaint | null }>({
     isOpen: false,
     complaint: null,
   });
@@ -323,6 +333,7 @@ export default function OfficialDashboard() {
     setSelected(c);
     setTimeline([]);
     setTimelineLoading(true);
+    // If opening via drag, don't auto-open verify modal. But if user clicks verify button... handled separately.
     try {
       const res = await api.getComplaintTimeline(c.id);
       setTimeline(res.timeline);
@@ -345,16 +356,11 @@ export default function OfficialDashboard() {
     if (!userProfile?.uid) return;
     setUpdatingId(complaintId);
     try {
-      // Hackathon flow: only in_progress/resolved via v2 endpoint (timeline-backed).
-      // Keep legacy endpoint for other internal statuses used by existing UI.
-      const { complaint } =
-        status === 'in_progress' || status === 'resolved'
-          ? await api.updateComplaintStatusV2(complaintId, { status, note: notes })
-          : await api.updateComplaintStatus(complaintId, {
-            officialId: userProfile.uid,
-            status,
-            notes,
-          });
+      const { complaint } = await api.updateComplaintStatus(complaintId, {
+        officialId: userProfile.uid,
+        status,
+        notes,
+      });
       setComplaints((prev) => prev.map((c) => (c.id === complaint.id ? complaint : c)));
       toast({
         title: 'Status updated',
@@ -371,27 +377,59 @@ export default function OfficialDashboard() {
     }
   };
 
-  const handleResolve = async (complaintId: string) => {
-    setUpdatingId(complaintId);
+  const onDragEnd = async (result: DropResult) => {
+    const { destination, draggableId } = result;
+
+    if (!destination) {
+      return;
+    }
+
+    if (
+      destination.droppableId === result.source.droppableId &&
+      destination.index === result.source.index
+    ) {
+      return;
+    }
+
+    const complaint = complaints.find(c => c.id === draggableId);
+    if (!complaint) return;
+
+    // Determine new status based on column ID
+    let newStatus = complaint.status;
+    const columnId = destination.droppableId;
+
+    if (columnId === 'todo') {
+       // If moving back to todo, reset to assigned or analyzed
+       newStatus = 'assigned'; 
+    } else if (columnId === 'in_progress') {
+       newStatus = 'in_progress';
+    } else if (columnId === 'done') {
+       newStatus = 'resolved';
+    }
+
+    // Optimistic update
+    const previousComplaints = [...complaints];
+    setComplaints(prev => prev.map(c => 
+      c.id === draggableId ? { ...c, status: newStatus as any } : c
+    ));
+
     try {
-      await api.resolveComplaint(complaintId, 'Resolved by official');
-      setComplaints((prev) =>
-        prev.map((c) =>
-          c.id === complaintId ? { ...c, status: 'resolved', escalationLevel: 0 } : c
-        )
-      );
-      toast({
-        title: 'Issue resolved',
-        description: 'Marked as resolved and removed from escalation.',
-      });
+       await api.updateKanbanStatus(draggableId, { 
+         status: newStatus,
+         officialId: userProfile?.uid
+       });
+       toast({
+          title: 'Status updated',
+          description: `Moved to ${columnId.replace('_', ' ')}`,
+       });
     } catch (error) {
-      toast({
-        title: 'Failed to resolve',
-        description: error instanceof Error ? error.message : 'Please try again.',
-        variant: 'destructive',
-      });
-    } finally {
-      setUpdatingId(null);
+       // Revert on failure
+       setComplaints(previousComplaints);
+       toast({
+          title: 'Update failed',
+          description: 'Could not update status. Reverting change.',
+          variant: 'destructive'
+       });
     }
   };
 
@@ -470,7 +508,17 @@ export default function OfficialDashboard() {
               View Reports
             </Button>
           </div>
+          <div className="flex gap-3">
+             <Button variant="outline" className="border-white/20">
+               <BarChart3 className="w-4 h-4 mr-2" />
+               Reports
+             </Button>
+          </div>
         </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+           {/* LEFT COLUMN: Main Dashboard (3/4 width) */}
+           <div className="lg:col-span-3">
 
         {/* Error Banner */}
         {loadError && (
@@ -593,7 +641,7 @@ export default function OfficialDashboard() {
           )}
         </motion.div>
 
-        {/* Assigned Issues */}
+        {/* Assigned Issues Kanban Board */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -601,7 +649,7 @@ export default function OfficialDashboard() {
           className="glass-panel p-6"
         >
           <div className="flex items-center justify-between mb-6">
-            <h2 className="text-lg font-semibold">Assigned Issues</h2>
+            <h2 className="text-lg font-semibold">Complaint Board</h2>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input
@@ -640,156 +688,19 @@ export default function OfficialDashboard() {
           </div>
 
           {loading && (
-            <div className="py-12 text-center text-muted-foreground">Loading assigned issues...</div>
+            <div className="py-12 text-center text-muted-foreground">Loading board...</div>
           )}
 
-          {!loading && sortedComplaints.length === 0 && (
-            <div className="py-16 text-center">
-              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white/5 flex items-center justify-center">
-                <FileText className="w-8 h-8 text-muted-foreground" />
-              </div>
-              <h3 className="text-lg font-medium mb-2">No assigned issues</h3>
-              <p className="text-sm text-muted-foreground max-w-sm mx-auto">
-                When citizens report issues in your jurisdiction, they will appear here for resolution.
-              </p>
-            </div>
-          )}
-
-          {!loading && sortedComplaints.length > 0 && (
-            <div className="space-y-4">
-              {sortedComplaints.map((complaint, idx) => {
-                const isEscalated = complaint.escalationLevel > 0;
-                const deadline = getDeadline(complaint);
-                const timeRemaining = deadline ? deadline.getTime() - nowTick : null;
-                const isCritical = timeRemaining && timeRemaining < 5000; // Red hot if < 5s
-
-                return (
-                  <motion.div
-                    key={complaint.id}
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: idx * 0.05 }}
-                    className={`glass-panel p-4 transition-all ${isEscalated
-                      ? 'border-2 border-destructive/50 shadow-lg shadow-destructive/20 bg-destructive/5'
-                      : isCritical
-                        ? 'border border-warning/50 shadow-md shadow-warning/10'
-                        : 'border border-white/10'
-                      }`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold capitalize">{complaint.category}</span>
-                          <span className={`text-xs font-medium uppercase ${severityColor(complaint.severity)}`}>
-                            {complaint.severity}
-                          </span>
-                          {complaint.escalationLevel > 0 && (
-                            <motion.span
-                              key={`escalation-${complaint.id}-${complaint.escalationLevel}`}
-                              initial={{ scale: 1.2, opacity: 0 }}
-                              animate={{ scale: 1, opacity: 1 }}
-                              className={`text-xs font-medium ${getEscalationColor(complaint.escalationLevel)}`}
-                            >
-                              Escalated L{complaint.escalationLevel}
-                            </motion.span>
-                          )}
-                          {complaint.status === 'sla_warning' && (
-                            <span className="text-xs font-medium text-warning">SLA WARNING</span>
-                          )}
-                        </div>
-                        <p className="text-sm text-muted-foreground">{complaint.description}</p>
-                        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                          <span>Priority: {complaint.priority}/10</span>
-                          <span>Status: {statusLabel(complaint.status)}</span>
-                          <span>Category: {complaint.category}</span>
-                          <span>
-                            {complaint.confidenceScore && complaint.confidenceScore > 0
-                              ? `Confidence: ${(complaint.confidenceScore * 100).toFixed(0)}%`
-                              : 'Confidence: Unavailable (AI Offline)'}
-                          </span>
-                          <span
-                            className="text-primary font-semibold flex items-center gap-1 cursor-help"
-                            title="AI suggests. System enforces. No silent failures."
-                          >
-                            🧠 AI Advisory
-                          </span>
-                          <span>
-                            {(() => {
-                              const deadline = getDeadline(complaint);
-                              if (!deadline) {
-                                return <span className="text-primary text-xs">Auto-Escalates every 10s (Demo)</span>;
-                              }
-                              const remaining = deadline.getTime() - nowTick;
-                              return (
-                                <span className={remaining < 0 ? 'text-destructive' : 'text-primary'}>
-                                  Next escalation: {formatRemaining(remaining)}
-                                </span>
-                              );
-                            })()}
-                          </span>
-                          <Button size="sm" variant="ghost" onClick={() => openTimeline(complaint)}>
-                            View timeline
-                          </Button>
-                          {complaint.status !== 'resolved' && (
-                            <Button
-                              size="sm"
-                              variant="default"
-                              onClick={() => handleResolve(complaint.id)}
-                              disabled={updatingId === complaint.id}
-                            >
-                              {updatingId === complaint.id ? 'Resolving...' : 'Resolve'}
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* AI Explainability */}
-                    {complaint.escalationLevel > 0 && (
-                      <Collapsible
-                        open={expandedIssues[complaint.id] || false}
-                        onOpenChange={() => toggleExpanded(complaint.id)}
-                        className="mt-4 pt-4 border-t border-white/10"
-                      >
-                        <CollapsibleTrigger asChild>
-                          <Button variant="ghost" size="sm" className="text-xs text-muted-foreground hover:text-primary h-8">
-                            <ChevronDown className={`w-3 h-3 mr-2 transition-transform ${expandedIssues[complaint.id] ? 'rotate-180' : ''}`} />
-                            Why was this escalated?
-                          </Button>
-                        </CollapsibleTrigger>
-                        <CollapsibleContent className="mt-3 space-y-2 text-xs">
-                          <div className="p-3 rounded-lg bg-white/5">
-                            <p className="text-muted-foreground mb-2"><strong>Escalation Journey:</strong></p>
-                            <p className="text-muted-foreground">• L0→L1: SLA approached</p>
-                          </div>
-                        </CollapsibleContent>
-                      </Collapsible>
-                    )}
-
-                    {/* AI Recommendation */}
-                    <div className="mt-4 pt-4 border-t border-white/10">
-                      <Button size="sm" variant="outline" onClick={() => setRecommendationModal({ isOpen: true, complaint })} className="text-xs">
-                        🔍 Ask AI for Resolution Suggestion
-                      </Button>
-                    </div>
-
-                    <div className="flex flex-wrap gap-2 mt-3">
-                      {(['acknowledged', 'in_progress', 'on_hold', 'resolved'] as const).map((status) => (
-                        <Button
-                          key={status}
-                          size="sm"
-                          variant={complaint.status === status ? 'default' : 'outline'}
-                          disabled={updatingId === complaint.id}
-                          onClick={() => handleUpdateStatus(complaint.id, status)}
-                        >
-                          {statusLabel(status)}
-                        </Button>
-                      ))}
-                    </div>
-                  </motion.div>
-                );
-              })}
-            </div>
+          {!loading && (
+             <div className="min-h-[600px]">
+                <KanbanBoard 
+                  complaints={sortedComplaints} 
+                  onDragEnd={onDragEnd}
+                  onView={openTimeline}
+                  isDragEnabled={true}
+                  showCitizenName={true}
+                />
+             </div>
           )}
         </motion.div>
 
@@ -850,6 +761,50 @@ export default function OfficialDashboard() {
             </p>
           </div>
         </motion.div>
+       </div>
+
+        {/* RIGHT COLUMN: Sidebar (1/4 width) */}
+        <div className="lg:col-span-1 space-y-6">
+            {/* Predictive Analytics Widget */}
+            <div className="glass-panel p-4">
+                <PredictionWidget />
+            </div>
+
+            {/* Quick Actions / Notices */}
+            <div className="glass-panel p-4">
+                <h3 className="font-semibold mb-3 flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-primary" />
+                    Pending Verification
+                </h3>
+                <div className="space-y-2">
+                    {complaints.filter(c => c.status === 'resolved' && !c.resolutionVerified).slice(0, 3).map(c => (
+                        <div key={c.id} className="p-3 bg-white/5 rounded-lg border border-white/10 hover:border-primary/30 transition-colors cursor-pointer" onClick={() => setVerifyModal({ isOpen: true, complaint: c })}>
+                             <p className="text-xs font-medium truncate">{c.title}</p>
+                             <p className="text-[10px] text-muted-foreground mt-1">Marked resolved • Click to verify</p>
+                        </div>
+                    ))}
+                    {complaints.filter(c => c.status === 'resolved' && !c.resolutionVerified).length === 0 && (
+                        <p className="text-xs text-muted-foreground italic">No resolutions pending verification.</p>
+                    )}
+                </div>
+            </div>
+
+             <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.6 }}
+                className="p-4 rounded-xl bg-warning/5 border border-warning/10 flex items-start gap-3"
+             >
+                <AlertTriangle className="w-5 h-5 text-warning flex-shrink-0 mt-0.5" />
+                <div>
+                   <p className="text-sm text-warning font-medium">Accountability Notice</p>
+                   <p className="text-xs text-muted-foreground mt-1">
+                      All actions are logged. SLA breaches trigger automatic escalation.
+                   </p>
+                </div>
+             </motion.div>
+        </div>
+        </div>
 
         {/* AI Recommendation Modal */}
         <Dialog open={recommendationModal.isOpen} onOpenChange={(isOpen) => setRecommendationModal({ ...recommendationModal, isOpen })}>
@@ -888,6 +843,29 @@ export default function OfficialDashboard() {
               );
             })()}
           </DialogContent>
+        </Dialog>
+
+        {/* Resolution Verification Modal */}
+        <Dialog open={verifyModal.isOpen} onOpenChange={(isOpen) => setVerifyModal({ ...verifyModal, isOpen })}>
+             <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+                 <DialogHeader>
+                     <DialogTitle>AI Resolution Verification</DialogTitle>
+                 </DialogHeader>
+                 {verifyModal.complaint && verifyModal.complaint.imageBase64 && (
+                     <ResolutionVerifier 
+                        complaintId={verifyModal.complaint.id}
+                        beforeImage={verifyModal.complaint.imageBase64}
+                        onVerified={() => {
+                            setVerifyModal({ isOpen: false, complaint: null });
+                            // Refresh complaints
+                            api.getAllComplaints().then(res => setComplaints(res.complaints || []));
+                        }}
+                     />
+                 )}
+                 {verifyModal.complaint && !verifyModal.complaint.imageBase64 && (
+                     <div className="p-8 text-center text-muted-foreground">Original image not available for verification.</div>
+                 )}
+             </DialogContent>
         </Dialog>
       </main>
     </div>
