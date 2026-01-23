@@ -254,6 +254,39 @@ router.get('/dashboard/stats', async (_req: Request, res: Response) => {
 });
 
 /**
+ * PUT /api/complaints/:id/kanban-status
+ * Handle drag-and-drop status updates from Kanban board
+ */
+router.put('/:id/kanban-status', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status, officialId } = req.body;
+    
+    // Validate status
+    const validStatuses = [
+        'submitted', 'analyzed', 'assigned', 
+        'in_progress', 'acknowledged', 'on_hold', 'sla_warning', 'escalated',
+        'resolved'
+    ];
+    
+    if (!validStatuses.includes(status)) {
+        return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    console.log(`📋 Kanban update: ${id} -> ${status} (by ${officialId})`);
+
+    // Use existing service method to handle logic
+    await complaintService.updateComplaintProgress(id, officialId || 'unknown', status);
+
+    const complaint = await firebaseService.getComplaint(id);
+    res.json({ success: true, complaint });
+  } catch (err: any) {
+    console.error('Kanban update failed:', err);
+    res.status(500).json({ error: err.message || 'Failed to update status' });
+  }
+});
+
+/**
  * POST /api/complaints/chaos
  * 🔥 CHAOS BUTTON - Simulate stress for judges
  */

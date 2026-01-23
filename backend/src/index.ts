@@ -4,6 +4,7 @@ import cors from 'cors';
 import admin from 'firebase-admin';
 import { initializeFirebase } from './services/firebase.service.js';
 import complaintsRouter from './routes/complaints.js';
+import aiRouter from './routes/ai.js';
 import { slaWatchdogService } from './services/slaWatchdog.service.js';
 import { testGeminiConnection } from './services/gemini.service.js';
 
@@ -56,6 +57,7 @@ testGeminiConnection().then((ok) => {
 
 // Routes
 app.use('/api/complaints', complaintsRouter);
+app.use('/api/ai', aiRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {
