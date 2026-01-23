@@ -17,8 +17,8 @@ export function KanbanCard({ complaint, index, isDragEnabled, onView, showCitize
   
   // Translation display logic
   const displayTitle = complaint.language === 'english' || !complaint.translatedTitle
-      ? complaint.title 
-      : complaint.translatedTitle;
+      ? (complaint.title || complaint.description) 
+      : (complaint.translatedTitle || complaint.title || complaint.description);
       
   const originalTitle = complaint.wasTranslated ? complaint.originalTitle : null;
 

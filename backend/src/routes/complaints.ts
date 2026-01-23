@@ -549,11 +549,22 @@ router.put('/:id/resolve', async (req: Request, res: Response) => {
     const db = admin.firestore();
     const now = admin.firestore.Timestamp.now();
 
+    // Get complaint to find citizen ID
+    const complaintDoc = await db.collection('complaints').doc(id).get();
+    const complaint = complaintDoc.data();
+    
+    if (!complaint) {
+      return res.status(404).json({ error: 'Complaint not found' });
+    }
+
+    // Update complaint status
     await db.collection('complaints').doc(id).update({
       status: 'resolved',
       escalationLevel: 0,
       nextEscalationAt: null,
       updatedAt: now,
+      currencyEarned: 50,
+      currencyAwardedAt: now,
       timeline: admin.firestore.FieldValue.arrayUnion({
         type: 'RESOLUTION',
         timestamp: now,
@@ -561,8 +572,15 @@ router.put('/:id/resolve', async (req: Request, res: Response) => {
       }),
     });
 
-    console.log(`✅ Official resolved complaint ${id}`);
-    res.json({ success: true, message: 'Complaint resolved' });
+    // Award 50 points to citizen
+    await firebaseService.awardCurrency(
+      complaint.citizenId,
+      50,
+      `Complaint ${id} resolved - earned 50 points`
+    );
+
+    console.log(`✅ Official resolved complaint ${id} - awarded 50 points to citizen ${complaint.citizenId}`);
+    res.json({ success: true, message: 'Complaint resolved and 50 points awarded' });
   } catch (err: any) {
     console.error('Resolve complaint failed:', err);
     res.status(500).json({ error: 'Failed to resolve complaint', details: err.message });
