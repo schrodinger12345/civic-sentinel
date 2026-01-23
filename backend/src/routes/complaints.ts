@@ -254,6 +254,39 @@ router.get('/dashboard/stats', async (_req: Request, res: Response) => {
 });
 
 /**
+ * PUT /api/complaints/:id/kanban-status
+ * Handle drag-and-drop status updates from Kanban board
+ */
+router.put('/:id/kanban-status', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status, officialId } = req.body;
+    
+    // Validate status
+    const validStatuses = [
+        'submitted', 'analyzed', 'assigned', 
+        'in_progress', 'acknowledged', 'on_hold', 'sla_warning', 'escalated',
+        'resolved'
+    ];
+    
+    if (!validStatuses.includes(status)) {
+        return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    console.log(`📋 Kanban update: ${id} -> ${status} (by ${officialId})`);
+
+    // Use existing service method to handle logic
+    await complaintService.updateComplaintProgress(id, officialId || 'unknown', status);
+
+    const complaint = await firebaseService.getComplaint(id);
+    res.json({ success: true, complaint });
+  } catch (err: any) {
+    console.error('Kanban update failed:', err);
+    res.status(500).json({ error: err.message || 'Failed to update status' });
+  }
+});
+
+/**
  * POST /api/complaints/chaos
  * 🔥 CHAOS BUTTON - Simulate stress for judges
  */
@@ -503,6 +536,38 @@ router.get('/:id', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Get complaint failed:', err);
     res.status(500).json({ error: 'Failed to get complaint' });
+  }
+});
+
+/**
+ * PUT /api/complaints/:id/resolve
+ * Official marks complaint as resolved
+ */
+router.put('/:id/resolve', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { note } = req.body;
+
+    const db = admin.firestore();
+    const now = admin.firestore.Timestamp.now();
+
+    await db.collection('complaints').doc(id).update({
+      status: 'resolved',
+      escalationLevel: 0,
+      nextEscalationAt: null,
+      updatedAt: now,
+      timeline: admin.firestore.FieldValue.arrayUnion({
+        type: 'RESOLUTION',
+        timestamp: now,
+        note: note || 'Manually resolved by official',
+      }),
+    });
+
+    console.log(`✅ Official resolved complaint ${id}`);
+    res.json({ success: true, message: 'Complaint resolved' });
+  } catch (err: any) {
+    console.error('Resolve complaint failed:', err);
+    res.status(500).json({ error: 'Failed to resolve complaint', details: err.message });
   }
 });
 

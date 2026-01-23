@@ -31,6 +31,12 @@ export interface Complaint {
     longitude: number;
   };
 
+  // Translation support
+  originalTitle?: string;
+  translatedTitle?: string;
+  language?: 'hindi' | 'marathi' | 'english' | 'other';
+  wasTranslated?: boolean;
+
   createdAt: Date;
   updatedAt: Date;
 
@@ -67,6 +73,28 @@ export interface Complaint {
 
   // Audit trail
   auditLog: AuditEntry[];
+
+  // Emergency detection
+  isEmergency?: boolean;
+  emergencyType?: string;
+  urgencyLevel?: 'IMMEDIATE' | 'URGENT' | 'STANDARD';
+
+  // Sentiment analysis
+  sentimentScore?: number; // -1.0 (frustrated) to 1.0 (calm)
+
+  // Voice submission
+  audioBase64?: string;
+  transcription?: string;
+
+  // Duplicate detection
+  isDuplicate?: boolean;
+  duplicateOfId?: string;
+
+  // Resolution verification
+  beforeImageBase64?: string;
+  afterImageBase64?: string;
+  resolutionVerified?: boolean;
+  resolutionConfidence?: number;
 }
 
 export type ComplaintStatus =
@@ -105,6 +133,13 @@ export interface GeminiAnalysisResult {
   priority: number; // 1-10 score
   confidenceScore: number; // 0.0 - 1.0
   authenticityStatus: AuthenticityStatus; // derived from confidenceScore
+  
+  // Emergency detection
+  isEmergency?: boolean;
+  emergencyType?: string | null;
+  
+  // Sentiment analysis
+  sentimentScore?: number;
 }
 
 export type TimelineEventType = 'system' | 'official' | 'citizen';

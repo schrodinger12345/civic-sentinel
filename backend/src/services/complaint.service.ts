@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Complaint, GeminiAnalysisResult, AgentDecision, AuthenticityStatus } from '../types/complaint.js';
 import { geminiService } from './gemini.service.js';
 import { firebaseService } from './firebase.service.js';
+import { translateService } from './translate.service.js';
 
 // 🔥 SLA is intentionally 10 seconds for demo determinism
 const SLA_MS = 10_000;
@@ -28,8 +29,30 @@ export class ComplaintService {
     let analysis: GeminiAnalysisResult;
     let usedAI = false;
 
+    // Step 0: Translate title if needed (Hindi/Marathi -> English)
+    let translatedTitle = title;
+    let originalTitle = title;
+    let language: 'hindi' | 'marathi' | 'english' | 'other' = 'other';
+    let wasTranslated = false;
+
     try {
-      analysis = await geminiService.analyzeImage(imageBase64, title, coordinates);
+      const translation = await translateService.translateToEnglish(title);
+      translatedTitle = translation.translatedText;
+      language = translation.detectedLanguage;
+      wasTranslated = translation.wasTranslated;
+      
+      if (wasTranslated) {
+          console.log(`🗣️ Translated: "${originalTitle}" -> "${translatedTitle}" (${language})`);
+      }
+    } catch (err) {
+      console.warn('⚠️ Translation failed, using original title:', err);
+    }
+    
+    // Use translated title for AI analysis
+    const analysisTitle = translatedTitle;
+
+    try {
+      analysis = await geminiService.analyzeImage(imageBase64, analysisTitle, coordinates);
       usedAI = true;
       console.log('✅ Gemini Vision analysis successful:', analysis);
     } catch (error) {
@@ -90,7 +113,12 @@ export class ComplaintService {
       description: analysis.generatedDescription,
 
       // Image-based fields
-      title,
+      title: translatedTitle, // Always store English/Translated title as main title for Officials
+      originalTitle,          // Store original for reference
+      translatedTitle,
+      language,
+      wasTranslated,
+
       imageBase64,
       coordinates,
 
@@ -145,8 +173,19 @@ export class ComplaintService {
 
     console.log(`🕐 SLA set: createdAt=${now.toISOString()}, nextEscalationAt=${nextEscalationAt.toISOString()}, diff=${slaDiff}ms`);
 
-    // Step 4: Save to Firebase
+    // Step 5: Save to Firebase
     await firebaseService.createComplaint(complaint);
+
+    // Step 6: Logging and Timeline events
+    // Log translation if it happened
+    if (wasTranslated) {
+      await firebaseService.appendTimelineEvent(complaint.id, {
+        type: 'system',
+        action: 'ai_translation',
+        message: `Translated from ${language}: "${originalTitle}"`,
+        timestamp: now,
+      });
+    }
 
     // Step 5: Timeline AI advisory logging (explainability)
     if (usedAI) {
