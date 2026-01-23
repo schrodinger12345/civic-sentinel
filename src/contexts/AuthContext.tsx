@@ -28,6 +28,8 @@ export interface UserProfile {
   department?: string;
   designation?: string;
   jurisdiction?: string;
+  // In-app currency
+  currency?: number;
 }
 
 interface AuthContextType {

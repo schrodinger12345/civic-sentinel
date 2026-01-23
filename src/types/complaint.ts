@@ -100,6 +100,10 @@ export interface Complaint {
   auditLog: AuditEntry[];
   /** Agent decision - verbatim Gemini output for proof of AI agency */
   agentDecision?: AgentDecision;
+  
+  // In-app currency rewards
+  currencyEarned?: number;
+  currencyAwardedAt?: string | Date;
 }
 
 export interface OfficialStats {

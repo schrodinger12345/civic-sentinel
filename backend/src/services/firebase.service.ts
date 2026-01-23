@@ -331,6 +331,34 @@ export class FirebaseService {
   }
 
   /**
+   * Award currency to a citizen for complaint resolution
+   */
+  async awardCurrency(citizenId: string, amount: number, reason: string): Promise<void> {
+    const userRef = db.collection('users').doc(citizenId);
+    await userRef.update({
+      currency: admin.firestore.FieldValue.increment(amount),
+      lastCurrencyUpdate: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    
+    // Log to audit trail
+    await db.collection('currency_logs').add({
+      citizenId,
+      amount,
+      reason,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  /**
+   * Get user's current currency balance
+   */
+  async getUserCurrency(userId: string): Promise<number> {
+    const userRef = db.collection('users').doc(userId);
+    const doc = await userRef.get();
+    return doc.data()?.currency ?? 0;
+  }
+
+  /**
    * Convert Firestore document to Complaint object
    */
   private firestoreToComplaint(data: any): Complaint {

@@ -243,5 +243,15 @@ export const api = {
         estimatedTimeframe: string;
       }>;
     }>('/ai/predictions'),
+
+  // Currency methods
+  getUserCurrency: (userId: string) =>
+    request<{ currency: number }>(`/users/${userId}/currency`),
+
+  awardCurrency: (userId: string, amount: number, reason: string) =>
+    request<{ success: boolean; newBalance: number }>(`/users/${userId}/currency/award`, {
+      method: 'POST',
+      body: JSON.stringify({ amount, reason }),
+    }),
 };
 
